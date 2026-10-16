@@ -1,0 +1,10 @@
+/target/
+/build/
+/state/
+*.apk
+*.jks
+*.keystore
+.env
+__pycache__/
+/.install/
+/bin/

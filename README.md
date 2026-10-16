@@ -1,0 +1,14 @@
+# readb
+
+Remote ADB. One server. Many phones and headsets.
+
+Rust CLI, device jobs and a web dashboard. Web stays off until you enable it.
+View together. One person controls each device. Different devices work in parallel.
+
+**In development. No stable installer or release yet.**
+Existing device services stay in place during migration.
+
+Build with `cargo build --locked`. See [CLI](docs/cli.md) and [status](docs/status.md).
+
+Noncommercial use only. See [LICENSE](LICENSE).
+Contact: ucha.bokeria.primary@gmail.com
