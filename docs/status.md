@@ -27,6 +27,8 @@ pure Rust report scheduling and a bounded JNI bridge. Host JVM smoke passed;
 arm64 native build and development APK compile/sign/alignment checks passed.
 Encrypted profile/VPN/report/UI source exists. Development APK installed on Quest
 API34; six synthetic encrypted-storage checks passed with prior data restored.
-Onboarding launch is pending; no new VPN/report startup or real profile import. Desktop and390px preview checked through owner Chrome extension.
+Upgraded16KiB APK passed the same six storage checks. Non-waiting launch returns
+normally, but Quest capture is black and input has no focused app/window; headset
+visual acceptance remains blocked. No new VPN/report startup or real profile import. Desktop and390px preview checked through owner Chrome extension.
 Source public main/submodule exist; no live readb cutover or stable release.
 See android.md for build and pending platform acceptance.

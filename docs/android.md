@@ -57,3 +57,12 @@ References: [JNI](https://docs.rs/jni/0.22.4/jni/),
 [local network permissions](https://developer.android.com/privacy-and-security/local-network-permission).
 The current build targets API36. Revisit local-network permission flows before
 raising it to API37; do not claim modern permission acceptance from compilation.
+
+## Current device evidence
+
+October17: development arm64 APK installed/upgraded on Quest API34. Six storage
+checks passed before and after16KiB rebuild. No real profile or transport switch.
+The normal non-waiting launch returned successfully; no app crash was recorded.
+Capture was black and input reported no focused app/window. Browser layout checks
+are separate; headset visual/hand acceptance remains open. Avoid waiting for a
+headless Quest activity to resume with am start -W; it timed out in this test.
