@@ -8,12 +8,9 @@ use std::{
 };
 pub const SCHEMA: u32 = 1;
 pub fn valid_id(s: &str) -> bool {
-    !s.is_empty()
-        && s.len() <= 48
-        && s.as_bytes()[0].is_ascii_alphanumeric()
-        && s.bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    readb_protocol::valid_device_id(s)
 }
+
 #[derive(Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Kind {
@@ -56,6 +53,7 @@ pub struct Device {
 pub enum ReportFormat {
     #[default]
     V1,
+    V2,
     LegacyQuest,
     LegacyPixel,
 }

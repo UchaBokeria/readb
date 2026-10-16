@@ -19,3 +19,15 @@ until a controller reviews and pins the observed fingerprint.
 
 References: [ADB authentication](https://android.googlesource.com/platform/packages/modules/adb/+/refs/heads/main/client/auth.cpp),
 [ADB paths](https://android.googlesource.com/platform/packages/modules/adb/+/refs/heads/main/adb_utils.cpp).
+
+V2 reports carry a reporter epoch, sequence and optional TLS port. No-port reports
+are telemetry, never ADB acceptance. Persist ordering before applying side effects;
+port loss or epoch change fences old device work. A device that accepted V2 refuses
+legacy wire reports with report_protocol_downgrade, including after server restart.
+Manual pinned reconnect remains separate and cannot refresh cached V2 battery
+telemetry. Legacy-only devices stay compatible until each staged upgrade.
+
+Android core and server share identifier/report validation. Java service instances
+keep enrollment locked during startup/teardown; callbacks use reporter and service
+revisions so lost advertisements cannot restore a stale port. Android HTTP runs
+outside the serialized state worker. Details and limits: android.md.

@@ -99,8 +99,8 @@ impl Registry {
             (c.notifiers.get(id).cloned(), c.devices.get(id).cloned())
         };
         if let (Some(n), Some(b)) = (n, b) {
-            let receipt = b.state.lock().unwrap().receipt.clone();
-            let _ = n.process(&receipt);
+            let sample = b.battery_sample();
+            let _ = n.process_battery(&sample);
         }
     }
     pub fn device(&self, id: &str) -> Res<Arc<Backend>> {
@@ -262,6 +262,7 @@ pub fn parse_report(raw: &[u8], format: ReportFormat) -> Res<Report> {
         return Err("report_too_large".into());
     }
     let r = match format {
+        ReportFormat::V2 => return Err("v2_requires_envelope_parser".into()),
         ReportFormat::LegacyQuest => return Report::parse(raw),
         ReportFormat::LegacyPixel => {
             let p: Pixel =

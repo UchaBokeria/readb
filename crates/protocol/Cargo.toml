@@ -1,0 +1,11 @@
+[package]
+name = "readb-protocol"
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.88"
+license-file = "../../LICENSE"
+publish = false
+
+[dependencies]
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"

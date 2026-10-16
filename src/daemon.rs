@@ -158,15 +158,15 @@ pub fn control_client(mut s: UnixStream, r: Arc<Registry>) {
 fn report(mut s: TcpStream, peer: std::net::IpAddr, r: Arc<Registry>, bind: std::net::SocketAddr) {
     let _ = s.set_read_timeout(Some(Duration::from_secs(3)));
     let _ = s.set_write_timeout(Some(Duration::from_secs(3)));
-    let result = (|| -> Res<(u16, bool, Option<String>)> {
-        let req = http::request(&mut s, 128)?;
+    let result = (|| -> Res<(u16, bool, Option<String>, Option<String>)> {
+        let req = http::request(&mut s, 4096)?;
         let config = r.config();
         let Some(route) = config
             .listeners
             .iter()
             .find(|l| l.bind == bind && l.path == req.path && req.method == "POST")
         else {
-            return Ok((404, false, None));
+            return Ok((404, false, None, Some("unknown_report_route".into())));
         };
         let b = r.device(&route.device)?;
         if peer != std::net::IpAddr::V4(b.config.peer)
@@ -178,19 +178,41 @@ fn report(mut s: TcpStream, peer: std::net::IpAddr, r: Arc<Registry>, bind: std:
                 &format!("Bearer {}", b.config.token),
             )
         {
-            return Ok((403, false, None));
+            return Ok((
+                403,
+                false,
+                None,
+                Some("report_authentication_failed".into()),
+            ));
         }
-        let report = parse_report(&req.body, route.format)?;
-        match b.report(report) {
-            Ok(v) => Ok((200, v, Some(route.device.clone()))),
-            Err(e) if e == "rate_limited" => Ok((429, false, None)),
-            Err(_) => Ok((503, false, None)),
+        let result = match route.format {
+            crate::schema::ReportFormat::V2 => {
+                b.report_v2(readb_protocol::Report::parse(&req.body)?)
+            }
+            format => b.report(parse_report(&req.body, format)?),
+        };
+        match result {
+            Ok(v) => Ok((200, v, Some(route.device.clone()), None)),
+            Err(e) => {
+                let code = match e.as_str() {
+                    "stale_report_sequence"
+                    | "retired_report_epoch"
+                    | "report_protocol_downgrade" => 409,
+                    "rate_limited" => 429,
+                    _ => 503,
+                };
+                Ok((code, false, None, Some(e)))
+            }
         }
     })();
-    let (code, connected, id) = result.unwrap_or((400, false, None));
-    let _ = http::answer(&mut s, code, &json!({"ok":code==200,"connected":connected}));
+    let (code, connected, id, error) = result.unwrap_or_else(|e| (400, false, None, Some(e)));
+    let _ = http::answer(
+        &mut s,
+        code,
+        &json!({"ok":code==200,"connected":connected,"error":error}),
+    );
     drop(s);
-    if connected && let Some(id) = id {
+    if let Some(id) = id {
         r.notify(&id);
     }
 }

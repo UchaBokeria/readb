@@ -215,7 +215,7 @@ pub fn find(id: &str) -> Res<&'static Action> {
         .find(|a| a.id == id)
         .ok_or("unknown_action: run readb action ls".into())
 }
-fn package(v: &str) -> bool {
+pub(crate) fn package(v: &str) -> bool {
     !v.is_empty()
         && v.len() <= 255
         && v.bytes()

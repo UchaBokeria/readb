@@ -9,3 +9,7 @@ Web off by default. Keep requested awake policy separate from real unlocked stat
 Use cargo fmt --check, cargo test --locked and cargo clippy --all-targets -- -D warnings.
 Public code is noncommercial; dependencies keep their licenses.
 Keep README short. Design/history in docs/. Real device proof is separate from tests.
+
+Android source/build/acceptance: docs/android.md. Run workspace tests and
+scripts/test-android-jni.sh; the packager must reject4KiB-only JNI libraries.
+APK builds do not prove locked boot, VPN handover or Quest screen unlock.

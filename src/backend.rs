@@ -72,6 +72,8 @@ pub struct Viewer {
     pub active: bool,
 }
 pub struct State {
+    pub report_cursor: readb_protocol::Cursor,
+    pub companion: Option<(f64, readb_protocol::Report)>,
     pub viewers: std::collections::HashMap<String, Viewer>,
     pub operations: std::collections::HashMap<String, Operation>,
     pub keepalive: crate::schema::Keepalive,
@@ -124,6 +126,14 @@ impl Backend {
         } else {
             config.keepalive.clone()
         };
+        let cursor_path = config.dir.join("report-cursor.json");
+        let report_cursor = if cursor_path.exists() {
+            readb_protocol::Cursor::parse(
+                &fs::read(cursor_path).map_err(|_| "report_cursor_unavailable")?,
+            )?
+        } else {
+            Default::default()
+        };
         let paused = if config.dir.join("connection.json").exists() {
             let b = fs::read(config.dir.join("connection.json"))
                 .map_err(|_| "connection_policy_unavailable")?;
@@ -138,6 +148,8 @@ impl Backend {
             identity: Mutex::new(config.identity.clone()),
             config,
             state: Mutex::new(State {
+                report_cursor,
+                companion: None,
                 viewers: Default::default(),
                 operations: Default::default(),
                 keepalive,
@@ -259,25 +271,23 @@ impl Backend {
             let _transport = self.transport.lock().unwrap();
             let mut s = self.state.lock().unwrap();
             Self::lifecycle_admission(&mut s, ticket)?;
-            let port = port
-                .or_else(|| {
-                    ((0.0..=180.).contains(&(now() - s.receipt.received_at)))
-                        .then_some(s.receipt.port)
-                })
-                .filter(|p| *p >= 1024)
-                .ok_or("connect_port_unavailable: wait for companion report or pass --port")?;
-            atomic(&self.config.dir.join("connection.json"), &false)?;
-            s.paused = false;
-            port
+            port.or_else(|| {
+                ((0.0..=180.).contains(&(now() - s.receipt.received_at))).then_some(s.receipt.port)
+            })
+            .filter(|p| *p >= 1024)
+            .ok_or("connect_port_unavailable: wait for companion report or pass --port")?
         };
         if self.identity.lock().unwrap().is_empty() {
             return self.probe_identity(ticket, selected);
         }
         let battery = self.state.lock().unwrap().receipt.battery;
-        self.report(Report {
-            port: selected,
-            battery,
-        })?;
+        self.refresh_pinned(
+            ticket,
+            Report {
+                port: selected,
+                battery,
+            },
+        )?;
         Ok(self.status())
     }
     pub fn disconnect_device(&self, ticket: &str) -> Res<()> {
@@ -330,11 +340,34 @@ impl Backend {
         }
         Ok(())
     }
+    pub fn battery_sample(&self) -> crate::notifier::BatterySample {
+        let s = self.state.lock().unwrap();
+        if let Some((received, r)) = &s.companion {
+            crate::notifier::BatterySample {
+                received_at: *received,
+                battery: r.battery,
+                authenticated: true,
+                enrolled: !self.identity.lock().unwrap().is_empty(),
+            }
+        } else if s.report_cursor.is_initialized() {
+            crate::notifier::BatterySample {
+                received_at: 0.,
+                battery: -1,
+                authenticated: false,
+                enrolled: !self.identity.lock().unwrap().is_empty(),
+            }
+        } else {
+            crate::notifier::BatterySample::from_receipt(&s.receipt, now())
+        }
+    }
     pub fn status(&self) -> Value {
         let mut s = self.state.lock().unwrap();
         s.gate.expire(lease_now());
         s.viewers.retain(|_, v| v.active || v.expires > lease_now());
         let mut value = json!({"identity_configured":!self.identity.lock().unwrap().is_empty(),"paused":s.paused,"stopping":s.stopping,"connected":s.receipt.fresh(now()),"identity_verified":s.receipt.fresh(now()),"report_age_seconds":if s.receipt.received_at>0.{Some(now()-s.receipt.received_at)}else{None},"battery":s.receipt.battery,"adb_server_port":self.config.adb_port,"viewers":s.viewers.values().map(|v|json!({"owner":v.owner,"active":v.active,"remaining_seconds":(v.expires-lease_now()).max(0.)})).collect::<Vec<_>>(),"keepalive_policy":s.keepalive,"job":s.gate.lease,"lease_age_seconds":s.gate.lease.as_ref().map(|l|(lease_now()-l.started).max(0.)),"lease_remaining_seconds":s.gate.lease.as_ref().map(|l|(l.expires-lease_now()).max(0.)),"operation_running":s.gate.active,"cleanup_unknown":s.gate.cleanup_unknown,"generation":s.generation,"last_job":s.gate.last_owner,"cancel_reason":s.gate.cancel_reason});
+        if let Some((received, report)) = &s.companion {
+            value["companion"] = json!({"reported":true,"age_seconds":now()-received,"observed":report.observed,"tls_port_available":report.port.is_some()});
+        }
         if let Ok(bytes) = fs::read(self.config.dir.join("keepalive.json"))
             && bytes.len() <= 4096
             && let Ok(m) = serde_json::from_slice::<Value>(&bytes)
@@ -594,18 +627,98 @@ impl Backend {
         }
         Ok(())
     }
-    pub fn report(&self, r: Report) -> Res<bool> {
-        let _transport = self.transport.lock().unwrap();
-        let mut s = self.state.lock().unwrap();
-        Self::check_running(&s)?;
+    fn report_admission(s: &State) -> Res<()> {
+        Self::check_running(s)?;
         if s.operations.values().any(|op| op.pairing) {
             return Err("pairing_in_progress".into());
         }
-        let time = now();
         if s.last_attempt.is_some_and(|last| lease_now() - last < 5.) {
             return Err("rate_limited".into());
         }
+        Ok(())
+    }
+    fn report_unavailable(&self, s: &mut State, reason: &str) -> Res<()> {
+        s.receipt.connected = false;
+        s.receipt.identity_verified = false;
+        if s.target.is_some() || s.gate.active || s.viewers.values().any(|v| v.active) {
+            s.generation += 1;
+            s.target = None;
+            for v in s.viewers.values_mut() {
+                v.expires = 0.;
+            }
+            s.gate.cancel(reason);
+            if let Err(e) = self.persist_fence(s) {
+                s.gate.cleanup_unknown = Some("report_state_persistence_failed".into());
+                return Err(e);
+            }
+        }
+        Ok(())
+    }
+    pub fn report_v2(&self, r: readb_protocol::Report) -> Res<bool> {
+        r.validate()?;
+        let _transport = self.transport.lock().unwrap();
+        let mut s = self.state.lock().unwrap();
+        Self::report_admission(&s)?;
+        let mut next = s.report_cursor.clone();
+        let change = next.accept(&r)?;
+        if let Err(e) = atomic(&self.config.dir.join("report-cursor.json"), &next) {
+            s.gate.cleanup_unknown = Some("report_cursor_persistence_failed".into());
+            let _ = self.report_unavailable(&mut s, "report_cursor_persistence_failed");
+            return Err(e);
+        }
+        s.report_cursor = next;
         s.last_attempt = Some(lease_now());
+        if change == readb_protocol::EpochChange::Changed
+            || (change == readb_protocol::EpochChange::First && s.receipt.received_at > 0.)
+        {
+            self.report_unavailable(&mut s, "reporter_epoch_changed")?;
+        }
+        s.companion = Some((now(), r.clone()));
+        if let Some(port) = r.port {
+            return self.report_inner(
+                &mut s,
+                Report {
+                    port,
+                    battery: r.battery,
+                },
+            );
+        }
+        self.report_unavailable(&mut s, "tls_port_unavailable")?;
+        s.receipt = Receipt {
+            received_at: now(),
+            port: 0,
+            battery: r.battery,
+            ..Receipt::default()
+        };
+        atomic(&self.config.dir.join("last-report.json"), &s.receipt)?;
+        Ok(false)
+    }
+    pub fn report(&self, r: Report) -> Res<bool> {
+        self.refresh_report(r, None)
+    }
+    fn refresh_pinned(&self, ticket: &str, r: Report) -> Res<bool> {
+        self.refresh_report(r, Some(ticket))
+    }
+    fn refresh_report(&self, r: Report, ticket: Option<&str>) -> Res<bool> {
+        let _transport = self.transport.lock().unwrap();
+        let mut s = self.state.lock().unwrap();
+        Self::check_running(&s)?;
+        if ticket.is_none() && s.report_cursor.is_initialized() {
+            return Err("report_protocol_downgrade".into());
+        }
+        if let Some(ticket) = ticket {
+            Self::lifecycle_admission(&mut s, ticket)?;
+        }
+        Self::report_admission(&s)?;
+        if ticket.is_some() {
+            atomic(&self.config.dir.join("connection.json"), &false)?;
+            s.paused = false;
+        }
+        s.last_attempt = Some(lease_now());
+        self.report_inner(&mut s, r)
+    }
+    fn report_inner(&self, s: &mut State, r: Report) -> Res<bool> {
+        let time = now();
         if s.paused {
             s.receipt = Receipt {
                 received_at: time,
@@ -624,7 +737,7 @@ impl Backend {
                 v.expires = 0.;
             }
             s.gate.cancel("transport_changed");
-            self.persist_fence(&s)?;
+            self.persist_fence(s)?;
             s.receipt = Receipt {
                 received_at: time,
                 port: r.port,
@@ -642,13 +755,13 @@ impl Backend {
                     v.expires = 0.;
                 }
                 s.gate.cancel("identity_or_transport_unavailable");
-                self.persist_fence(&s)?;
+                self.persist_fence(s)?;
             }
             good
         } else {
             if s.target.is_some() && !same {
                 s.gate.cancel("transport_changed");
-                self.persist_fence(&s)?;
+                self.persist_fence(s)?;
             }
             let result = (|| -> Res<bool> {
                 let list = self.adb(&["devices"])?;
@@ -1051,6 +1164,7 @@ pub fn is_pure(a: &[String]) -> bool {
         || matches!(a,[one,two,three] if one=="shell"&&two=="df"&&three=="-h")
         || matches!(a,[one,two,three] if one=="shell"&&two=="ps"&&three=="-A")
         || matches!(a,[one,two,three,four] if one=="shell"&&two=="pm"&&three=="list"&&four=="packages")
+        || matches!(a,[one,two,three,four] if one=="shell"&&two=="pm"&&three=="path"&&crate::actions::package(four))
         || matches!(a,[one] if one=="get-state")
         || (a.first().is_some_and(|v| v == "logcat")
             && a.iter().skip(1).all(|v| {

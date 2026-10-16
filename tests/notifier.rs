@@ -87,3 +87,45 @@ fn stale_or_unverified_cannot_notify() {
     n.process_with(&r, 101., || panic!(), |_, _| panic!())
         .unwrap();
 }
+#[test]
+fn enrolled_authenticated_boot_battery_can_notify_without_adb_but_untrusted_cannot() {
+    let c = setup();
+    let n = Notifier::new(&c).unwrap();
+    let sample = BatterySample {
+        received_at: 100.,
+        battery: 4,
+        authenticated: true,
+        enrolled: true,
+    };
+    let sends = Cell::new(0);
+    n.process_battery_with(
+        &sample,
+        101.,
+        || Ok("1@s.whatsapp.net".into()),
+        |route, _| {
+            if route == "/health" {
+                Ok(json!({"status":"connected"}))
+            } else {
+                sends.set(sends.get() + 1);
+                Ok(json!({"success":true,"messageId":"fixture"}))
+            }
+        },
+    )
+    .unwrap();
+    assert_eq!(sends.get(), 1);
+    for (authenticated, enrolled) in [(false, true), (true, false)] {
+        let n = Notifier::new(&setup()).unwrap();
+        n.process_battery_with(
+            &BatterySample {
+                received_at: 100.,
+                battery: 4,
+                authenticated,
+                enrolled,
+            },
+            101.,
+            || panic!("untrusted sample"),
+            |_, _| panic!("untrusted sample"),
+        )
+        .unwrap();
+    }
+}

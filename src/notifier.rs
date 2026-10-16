@@ -5,6 +5,28 @@ use crate::{
 };
 use serde_json::{Value, json};
 use std::{fs, path::PathBuf, sync::Mutex};
+pub struct BatterySample {
+    pub received_at: f64,
+    pub battery: i16,
+    pub authenticated: bool,
+    pub enrolled: bool,
+}
+impl BatterySample {
+    pub fn from_receipt(r: &Receipt, time: f64) -> Self {
+        Self {
+            received_at: r.received_at,
+            battery: r.battery,
+            authenticated: r.fresh(time),
+            enrolled: r.identity_verified,
+        }
+    }
+    fn fresh(&self, time: f64) -> bool {
+        self.authenticated
+            && self.enrolled
+            && (0.0..=180.).contains(&(time - self.received_at))
+            && (0..=100).contains(&self.battery)
+    }
+}
 pub struct Notifier {
     state: Mutex<Notice>,
     path: PathBuf,
@@ -31,7 +53,10 @@ impl Notifier {
         })
     }
     pub fn process(&self, r: &Receipt) -> Res<()> {
-        self.process_with(
+        self.process_battery(&BatterySample::from_receipt(r, now()))
+    }
+    pub fn process_battery(&self, r: &BatterySample) -> Res<()> {
+        self.process_battery_with(
             r,
             now(),
             || {
@@ -56,7 +81,21 @@ impl Notifier {
         identity: impl Fn() -> Res<String>,
         bridge: impl Fn(&str, Option<&Value>) -> Res<Value>,
     ) -> Res<()> {
-        if !r.fresh(time) || r.battery < 0 {
+        self.process_battery_with(
+            &BatterySample::from_receipt(r, time),
+            time,
+            identity,
+            bridge,
+        )
+    }
+    pub fn process_battery_with(
+        &self,
+        r: &BatterySample,
+        time: f64,
+        identity: impl Fn() -> Res<String>,
+        bridge: impl Fn(&str, Option<&Value>) -> Res<Value>,
+    ) -> Res<()> {
+        if !r.fresh(time) {
             return Ok(());
         }
         let mut s = self.state.lock().unwrap();

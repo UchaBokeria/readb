@@ -409,3 +409,180 @@ fn identity_review_cannot_transfer_to_another_controller_job() {
             .is_err()
     );
 }
+
+fn v2(epoch: &str, sequence: u64, port: Option<u16>) -> readb_protocol::Report {
+    readb_protocol::Report::parse(&serde_json::to_vec(&serde_json::json!({"schema":2,"epoch":epoch,"sequence":sequence,"port":port,"battery":60,"observed":{"credential_storage_unlocked":true,"screen_lock":"unknown","vpn_active":true,"notifications":"granted","discovery":"granted","secure_settings":"granted"}})).unwrap()).unwrap()
+}
+#[test]
+fn no_port_is_authenticated_telemetry_not_a_connection_and_replay_does_not_refresh() {
+    let b = setup();
+    assert!(!b.report_v2(v2("reporter-one", 1, None)).unwrap());
+    assert_eq!(b.status()["connected"], false);
+    assert_eq!(
+        b.status()["companion"]["observed"]["screen_lock"],
+        "unknown"
+    );
+    let received = b.state.lock().unwrap().receipt.received_at;
+    b.state.lock().unwrap().last_attempt = None;
+    assert!(
+        b.report_v2(v2("reporter-one", 1, Some(40000)))
+            .unwrap_err()
+            .contains("stale_report")
+    );
+    assert_eq!(b.state.lock().unwrap().receipt.received_at, received);
+    let reboot = Backend::new(b.config.clone()).unwrap();
+    assert!(reboot.report_v2(v2("reporter-one", 1, None)).is_err());
+    assert!(!reboot.report_v2(v2("reporter-one", 2, None)).unwrap());
+}
+#[test]
+fn reporter_epoch_change_fences_dispatched_mutation_even_when_port_is_the_same() {
+    let b = setup();
+    assert!(b.report_v2(v2("reporter-one", 1, Some(40000))).unwrap());
+    let owner = Owner {
+        agent: "test".into(),
+        origin: "host".into(),
+        session: "v2".into(),
+        job: "input".into(),
+        allow_sleep: false,
+    };
+    let t = b.claim(owner.clone(), 90).unwrap();
+    let view = b.watch(owner, 90).unwrap();
+    let mut p = b
+        .prepare(
+            &t,
+            vec![
+                "shell".into(),
+                "input".into(),
+                "keyevent".into(),
+                "3".into(),
+            ],
+        )
+        .unwrap();
+    let mut child = b.spawn(&t, &mut p).unwrap();
+    child.wait().unwrap();
+    let generation = p.generation;
+    b.state.lock().unwrap().last_attempt = None;
+    let _ = b.report_v2(v2("reporter-two", 1, Some(40000))).unwrap();
+    assert!(!b.running(&t, generation));
+    assert!(b.status()["cleanup_unknown"].is_string());
+    assert!(
+        b.prepare(
+            &view,
+            vec!["shell".into(), "getprop".into(), "ro.product.model".into()]
+        )
+        .is_err()
+    );
+    b.complete_for(&t, true);
+}
+
+#[test]
+fn accepted_v2_rejects_wire_downgrade_across_restart_but_allows_pinned_manual_reconnect() {
+    let b = setup();
+    assert!(b.report_v2(v2("reporter-one", 1, Some(40000))).unwrap());
+    b.state.lock().unwrap().last_attempt = None;
+    let legacy = || Report {
+        port: 41000,
+        battery: 1,
+    };
+    assert_eq!(b.report(legacy()).unwrap_err(), "report_protocol_downgrade");
+    assert_eq!(b.battery_sample().battery, 60);
+    assert_eq!(b.state.lock().unwrap().receipt.port, 40000);
+    let ticket = b
+        .claim(
+            Owner {
+                agent: "test".into(),
+                origin: "host".into(),
+                session: "v2".into(),
+                job: "manual reconnect".into(),
+                allow_sleep: false,
+            },
+            90,
+        )
+        .unwrap();
+    assert!(
+        b.connect_device(&ticket, Some(40000)).unwrap()["connected"]
+            .as_bool()
+            .unwrap()
+    );
+    b.release(&ticket).unwrap();
+    let restarted = Backend::new(b.config.clone()).unwrap();
+    assert_eq!(
+        restarted.report(legacy()).unwrap_err(),
+        "report_protocol_downgrade"
+    );
+}
+
+#[test]
+fn rejected_manual_reconnect_preserves_pause_policy() {
+    let b = setup();
+    assert!(b.report_v2(v2("reporter-one", 1, Some(40000))).unwrap());
+    let ticket = b
+        .claim(
+            Owner {
+                agent: "test".into(),
+                origin: "host".into(),
+                session: "pause".into(),
+                job: "connect".into(),
+                allow_sleep: false,
+            },
+            90,
+        )
+        .unwrap();
+    b.disconnect_device(&ticket).unwrap();
+    assert_eq!(
+        b.connect_device(&ticket, Some(40000)).unwrap_err(),
+        "rate_limited"
+    );
+    assert_eq!(b.status()["paused"], true);
+    b.state.lock().unwrap().last_attempt = None;
+    assert_eq!(
+        b.connect_device(&ticket, Some(40000)).unwrap()["connected"],
+        true
+    );
+    assert_eq!(b.status()["paused"], false);
+    b.release(&ticket).unwrap();
+}
+
+#[test]
+fn manual_reconnect_cannot_promote_cached_v2_battery_after_server_restart() {
+    let b = setup();
+    assert!(b.report_v2(v2("reporter-one", 1, Some(40000))).unwrap());
+    let b = Backend::new(b.config.clone()).unwrap();
+    let ticket = b
+        .claim(
+            Owner {
+                agent: "test".into(),
+                origin: "host".into(),
+                session: "restart".into(),
+                job: "reconnect".into(),
+                allow_sleep: false,
+            },
+            90,
+        )
+        .unwrap();
+    assert_eq!(
+        b.connect_device(&ticket, Some(40000)).unwrap()["connected"],
+        true
+    );
+    assert!(!b.battery_sample().authenticated);
+    b.release(&ticket).unwrap();
+}
+
+#[test]
+fn package_path_query_is_observational_but_other_package_actions_are_not() {
+    let args = |s: &[&str]| s.iter().map(|v| v.to_string()).collect::<Vec<_>>();
+    assert!(is_pure(&args(&[
+        "shell",
+        "pm",
+        "path",
+        "dev.readb.companion"
+    ])));
+    for argv in [
+        vec!["shell", "pm", "clear", "dev.readb.companion"],
+        vec!["shell", "pm", "path", "--user", "0", "dev.readb.companion"],
+        vec!["shell", "pm", "path", "-bad"],
+        vec!["shell", "pm", "path", "dev.app;id"],
+    ] {
+        assert!(!is_pure(&args(&argv)));
+    }
+}

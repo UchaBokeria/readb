@@ -8,6 +8,7 @@ rust-version = "1.88"
 publish = false
 
 [dependencies]
+readb-protocol = { path = "crates/protocol" }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
 sha2 = "=0.11.1"
@@ -15,3 +16,7 @@ subtle = "=2.6.1"
 libc = "=0.2.189"
 clap = { version = "=4.6.7", features = ["derive"] }
 clap_complete = "=4.6.11"
+
+[workspace]
+members = ["crates/protocol", "crates/android-core"]
+resolver = "3"
