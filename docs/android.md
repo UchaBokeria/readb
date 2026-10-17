@@ -66,3 +66,16 @@ The normal non-waiting launch returned successfully; no app crash was recorded.
 Capture was black and input reported no focused app/window. Browser layout checks
 are separate; headset visual/hand acceptance remains open. Avoid waiting for a
 headless Quest activity to resume with am start -W; it timed out in this test.
+
+## Packaging metadata checkpoint
+
+October17: pinned tunnel1.0.20260102 POM declares Apache2.0, annotation1.9.1
+and collection1.5.0. Collection-jvm1.5.0 dependency management and annotation-jvm
+1.9.1 both resolve Kotlin stdlib1.9.24, matching the manual build pins. This is
+metadata verification, not complete APK/native transitive notice acceptance.
+Audit exact embedded Go modules, retain all notices and package them before a
+stable release; do not replace the upstream licenses with readb's custom terms.
+
+Sources: [tunnel POM](https://repo.maven.apache.org/maven2/com/wireguard/android/tunnel/1.0.20260102/tunnel-1.0.20260102.pom),
+[collection POM](https://dl.google.com/dl/android/maven2/androidx/collection/collection-jvm/1.5.0/collection-jvm-1.5.0.pom),
+[annotation POM](https://dl.google.com/dl/android/maven2/androidx/annotation/annotation-jvm/1.9.1/annotation-jvm-1.9.1.pom).
