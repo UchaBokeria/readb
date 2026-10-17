@@ -95,3 +95,107 @@ fn installer_reads_executing_inode_after_its_path_is_removed() {
         String::from_utf8_lossy(&result.stdout)
     );
 }
+
+#[test]
+fn a_description_is_not_permission_to_replace_an_unrelated_or_symlinked_unit() {
+    use std::{
+        fs,
+        os::unix::fs::{PermissionsExt, symlink},
+        process::Command,
+    };
+    for dangling in [false, true] {
+        let root =
+            std::env::temp_dir().join(format!("readb-unit-admission-{}", readb::policy::random()));
+        fs::create_dir(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        let adb = root.join("Android/platform-tools/adb");
+        fs::create_dir_all(adb.parent().unwrap()).unwrap();
+        fs::write(&adb, b"not executed by install").unwrap();
+        let unit = root.join(".config/systemd/user/readb.service");
+        fs::create_dir_all(unit.parent().unwrap()).unwrap();
+        let unknown=b"[Unit]\nDescription=readb remote Android coordinator\n[Service]\nExecStart=/bin/false\n";
+        if dangling {
+            symlink(root.join("missing-unit"), &unit).unwrap();
+        } else {
+            fs::write(&unit, unknown).unwrap();
+            fs::set_permissions(&unit, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let result = Command::new(env!("CARGO_BIN_EXE_readb"))
+            .args(["install", "--server", "--prefix"])
+            .arg(root.join("prefix"))
+            .env("HOME", &root)
+            .env_remove("DBUS_SESSION_BUS_ADDRESS")
+            .env_remove("XDG_RUNTIME_DIR")
+            .output()
+            .unwrap();
+        assert!(!result.status.success());
+        assert!(String::from_utf8_lossy(&result.stderr).contains("unmanaged_readb_unit_preserved"));
+        assert!(
+            !root.join("prefix/.install").exists(),
+            "reject unknown unit before any package writes"
+        );
+        if dangling {
+            assert!(fs::symlink_metadata(unit).unwrap().file_type().is_symlink());
+        } else {
+            assert_eq!(fs::read(unit).unwrap(), unknown);
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn unsafe_existing_server_config_is_rejected_before_install_writes() {
+    use std::{
+        fs,
+        os::unix::fs::{PermissionsExt, symlink},
+        process::Command,
+    };
+    for variant in ["hardlink", "oversize", "dangling"] {
+        let root = std::env::temp_dir().join(format!(
+            "readb-config-admission-{}",
+            readb::policy::random()
+        ));
+        fs::create_dir(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        let config = root.join(".config/readb/server.json");
+        fs::create_dir_all(config.parent().unwrap()).unwrap();
+        let bytes = br#"{"schema":1,"adb":"/usr/bin/adb","devices":[],"listeners":[]}"#;
+        if variant == "dangling" {
+            symlink(root.join("missing-config"), &config).unwrap();
+        } else {
+            fs::write(&config, bytes).unwrap();
+            fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
+            if variant == "hardlink" {
+                fs::hard_link(&config, root.join("owner-copy")).unwrap();
+            } else {
+                fs::OpenOptions::new()
+                    .write(true)
+                    .open(&config)
+                    .unwrap()
+                    .set_len(1024 * 1024 + 1)
+                    .unwrap();
+            }
+        }
+        let out = Command::new(env!("CARGO_BIN_EXE_readb"))
+            .args(["install", "--server", "--prefix"])
+            .arg(root.join("prefix"))
+            .env("HOME", &root)
+            .env_remove("DBUS_SESSION_BUS_ADDRESS")
+            .env_remove("XDG_RUNTIME_DIR")
+            .output()
+            .unwrap();
+        assert!(!out.status.success());
+        assert!(
+            String::from_utf8_lossy(&out.stderr)
+                .contains("existing_config_must_be_private_owned_regular_file"),
+            "{}: {}",
+            variant,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(!root.join("prefix/.install").exists());
+        if variant == "hardlink" {
+            assert_eq!(fs::read(&config).unwrap(), bytes);
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+}

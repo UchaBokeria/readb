@@ -119,3 +119,8 @@ GNU builds are now rejected. Portable script selects musl. Direct SYS_renameat2
 calls preserve no-replace semantics where the old musl CRT lacks a wrapper.
 This runner is a library prerequisite: complete user-installer journaling, service
 activation/persistence and live companion migration still remain.
+
+Installer admission hardened:170 workspace tests/fmt/Clippy and focused review pass.
+Unrelated units/configs survive rejected installs. Multi-file user journal remains
+next; no production cutover. Quest2D panel candidate passes6storage checks and
+1280x900 focus/frame, but actual panel visual capture remains unproved.

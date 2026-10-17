@@ -3,6 +3,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use std::{
     fs,
+    os::unix::fs::MetadataExt,
     os::unix::fs::symlink,
     path::{Path, PathBuf},
     process::Command,
@@ -24,6 +25,12 @@ fn executing_bytes() -> Res<Vec<u8>> {
 }
 fn safe_path(p: &Path) -> bool {
     p.is_absolute()
+        && !p.components().any(|c| {
+            matches!(
+                c,
+                std::path::Component::ParentDir | std::path::Component::CurDir
+            )
+        })
         && !p
             .as_os_str()
             .as_encoded_bytes()
@@ -65,6 +72,36 @@ pub fn plan(home: &Path, prefix: &Path, server: bool) -> Res<InstallPlan> {
         server,
     })
 }
+fn verified_release(path: &Path) -> Res<bool> {
+    use sha2::Digest;
+    let m = fs::symlink_metadata(path).map_err(|_| "previous_release_metadata_unavailable")?;
+    if !m.is_file()
+        || m.len() > 64 * 1024 * 1024
+        || m.uid() != unsafe { libc::geteuid() }
+        || m.nlink() != 1
+        || m.mode() & 0o777 != 0o700
+    {
+        return Ok(false);
+    }
+    let Some(name) = path
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(|s| s.to_str())
+    else {
+        return Ok(false);
+    };
+    let Some((_, short)) = name.rsplit_once('-') else {
+        return Ok(false);
+    };
+    if short.len() != 16 || !short.bytes().all(|c| c.is_ascii_hexdigit()) {
+        return Ok(false);
+    }
+    let hash = sha2::Sha256::digest(fs::read(path).map_err(|_| "previous_release_unreadable")?)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    Ok(hash.starts_with(short))
+}
 fn find_adb(home: &Path) -> Option<PathBuf> {
     let candidates = [
         home.join("Android/platform-tools/adb"),
@@ -84,6 +121,9 @@ fn atomic_bytes(path: &Path, bytes: &[u8], mode: u32) -> Res<()> {
             .mode(mode)
             .open(&temp)
             .map_err(|_| "install_file_create_failed")?;
+        use std::os::unix::fs::PermissionsExt;
+        f.set_permissions(fs::Permissions::from_mode(mode))
+            .map_err(|_| "install_file_permissions_failed")?;
         f.write_all(bytes)
             .and_then(|_| f.sync_all())
             .map_err(|_| "install_file_write_failed")?;
@@ -109,53 +149,97 @@ pub fn install(p: &InstallPlan, home: &Path, dry_run: bool) -> Res<Value> {
     let link = Path::new(&p.link);
     let bytes = executing_bytes()?;
     // Complete preflight before switching any live command or service definition.
-    if let Ok(meta) = fs::symlink_metadata(link) {
-        if !meta.file_type().is_symlink() {
-            return Err("readb_path_exists_and_is_not_managed_symlink".into());
+    let previous_target = match fs::symlink_metadata(link) {
+        Ok(meta) => {
+            if !meta.file_type().is_symlink() || meta.uid() != unsafe { libc::geteuid() } {
+                return Err("readb_path_exists_and_is_not_managed_symlink".into());
+            }
+            let target = fs::read_link(link).map_err(|_| "existing_link_unreadable")?;
+            let namespace = parent.parent().ok_or("invalid_install_path")?;
+            if !safe_path(&target)
+                || target
+                    .strip_prefix(namespace)
+                    .ok()
+                    .is_none_or(|p| p.components().count() != 2)
+                || target.file_name() != Some(std::ffi::OsStr::new("readb"))
+            {
+                return Err("readb_symlink_is_not_managed_here: existing command preserved".into());
+            }
+            Some(target)
         }
-        let target = fs::read_link(link).map_err(|_| "existing_link_unreadable")?;
-        if !target.starts_with(parent.parent().ok_or("invalid_install_path")?)
-            || target.file_name() != Some(std::ffi::OsStr::new("readb"))
-        {
-            return Err("readb_symlink_is_not_managed_here: existing command preserved".into());
-        }
-    }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(_) => return Err("existing_link_metadata_unavailable".into()),
+    };
     let config = Path::new(&p.config);
     let initial = if p.server {
-        if let Ok(m) = fs::symlink_metadata(config) {
-            use std::os::unix::fs::MetadataExt;
-            if !m.is_file() || m.uid() != unsafe { libc::geteuid() } || m.mode() & 0o077 != 0 {
-                return Err("existing_config_must_be_private_owned_regular_file".into());
+        match fs::symlink_metadata(config) {
+            Ok(m) => {
+                if !m.is_file()
+                    || m.uid() != unsafe { libc::geteuid() }
+                    || m.mode() & 0o077 != 0
+                    || m.nlink() != 1
+                    || m.len() > 1024 * 1024
+                {
+                    return Err("existing_config_must_be_private_owned_regular_file".into());
+                }
+                crate::schema::ServerConfig::parse(
+                    &fs::read(config).map_err(|_| "existing_config_unavailable")?,
+                )?;
+                None
             }
-            crate::schema::ServerConfig::parse(
-                &fs::read(config).map_err(|_| "existing_config_unavailable")?,
-            )?;
-            None
-        } else {
-            Some(
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(
                 json!({"schema":1,"adb":find_adb(home).ok_or("adb_missing: install Android platform-tools, then rerun; existing configuration was not changed")?,"devices":[],"listeners":[]}),
-            )
+            ),
+            Err(_) => return Err("existing_config_metadata_unavailable".into()),
         }
     } else {
         None
     };
     let unit = Path::new(&p.unit_path);
-    let old_unit = if p.server && unit.exists() {
-        let old = fs::read(unit).map_err(|_| "unit_unreadable")?;
-        if !String::from_utf8_lossy(&old).contains("Description=readb remote Android coordinator") {
-            return Err("unmanaged_readb_unit_preserved".into());
+    let old_unit = if p.server {
+        match fs::symlink_metadata(unit) {
+            Ok(meta) => {
+                if !meta.is_file()
+                    || meta.len() > 16384
+                    || meta.uid() != unsafe { libc::geteuid() }
+                    || meta.mode() & 0o077 != 0
+                    || meta.nlink() != 1
+                {
+                    return Err("unmanaged_readb_unit_preserved".into());
+                }
+                let old = fs::read(unit).map_err(|_| "unit_unreadable")?;
+                if old != p.unit.as_bytes() {
+                    let Some(target) = &previous_target else {
+                        return Err("unmanaged_readb_unit_preserved".into());
+                    };
+                    let previous_unit = p.unit.replace(&p.binary, &target.to_string_lossy());
+                    if old != previous_unit.as_bytes() || !verified_release(target)? {
+                        return Err("unmanaged_readb_unit_preserved".into());
+                    }
+                }
+                Some(old)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(_) => return Err("unit_metadata_unavailable".into()),
         }
-        Some(old)
     } else {
         None
     };
     private_dir(parent)?;
-    if let Ok(m) = fs::symlink_metadata(binary) {
-        if !m.is_file() || fs::read(binary).map_err(|_| "release_unreadable")? != bytes {
-            return Err("immutable_release_mismatch".into());
+    match fs::symlink_metadata(binary) {
+        Ok(m) => {
+            if !m.is_file()
+                || m.len() != bytes.len() as u64
+                || m.uid() != unsafe { libc::geteuid() }
+                || m.nlink() != 1
+                || m.mode() & 0o777 != 0o700
+                || fs::read(binary).map_err(|_| "release_unreadable")? != bytes
+            {
+                return Err("immutable_release_mismatch".into());
+            }
         }
-    } else {
-        atomic_bytes(binary, &bytes, 0o700)?;
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => atomic_bytes(binary, &bytes, 0o700)?,
+        Err(_) => return Err("release_metadata_unavailable".into()),
     }
     let completion = install_completions(binary, home)?;
     if p.server {
