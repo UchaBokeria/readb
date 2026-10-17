@@ -61,3 +61,32 @@ are left alone. An unresolved intent keeps RPC available for status/reconcile;
 startup never silently clears it. Ordinary clients cannot call either restore
 entry point. Isolated tests removed a managed peer while stopped, then verified
 startup restored it. No actual Blackwall or Android reboot was performed.
+
+## Install helper files
+
+Requires an existing private root policy at `/etc/readb/network-policy.json`.
+This is one setup phase, not the complete fresh-server installer.
+
+```sh
+sudo readb --local network install --dry-run
+sudo readb --local network install
+# Only after an interrupted installation:
+sudo readb --local network install-recover
+```
+
+Dry-run prints proposed paths/unit; filesystem admission still happens on install.
+Install writes a root-owned hash-addressed binary, the unit and a private receipt.
+It never starts a service or changes the VPN. Stop a running helper before upgrade.
+Unknown units, changed owned releases/units, unsafe paths and symlinks are refused.
+Source bytes come from the executing inode, not a replaceable user pathname.
+
+Interrupted install blocks helper startup under the same state-directory lock.
+Explicit recovery verifies recorded files and syncs them and directory links. It
+commits a complete known install or restores its previous verified unit/receipt.
+External changes stay fenced. Unused immutable releases and all device data stay.
+Activation/unit-manager acceptance belongs to the next setup phase.
+
+146 workspace tests, Clippy/fmt and focused review pass. All nine installer
+filesystem tests also passed as root on Blackwall in isolated image directories.
+The namespace helper passed with only CAP_NET_ADMIN and CAP_CHOWN. No production
+unit installation/activation, host reboot, fresh setup or device cutover proved.

@@ -120,6 +120,12 @@ enum Cmd {
 }
 #[derive(Subcommand)]
 enum NetworkCmd {
+    #[command(about = "Install root-owned helper files only; never start a service")]
+    Install {
+        #[arg(long)]
+        dry_run: bool,
+    },
+    InstallRecover,
     Helper {
         #[arg(long)]
         policy: PathBuf,
@@ -333,6 +339,14 @@ fn run() -> Res<i32> {
                 return Err("network_requires_explicit_--local_on_server".into());
             }
             use readb::network::Request;
+            if let NetworkCmd::Install { dry_run } = cmd {
+                output(&readb::network_install::install_on_server(*dry_run)?);
+                return Ok(0);
+            }
+            if matches!(cmd, NetworkCmd::InstallRecover) {
+                output(&readb::network_install::recover_on_server()?);
+                return Ok(0);
+            }
             use readb::network_runtime::{self, Call};
             if let NetworkCmd::Helper { policy, state } = cmd {
                 network_runtime::serve(policy, state)?;

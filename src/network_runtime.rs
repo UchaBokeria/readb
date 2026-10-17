@@ -242,7 +242,7 @@ fn protected_root_directory(path: &Path) -> Res<()> {
     }
     Ok(())
 }
-fn root_policy(path: &Path) -> Res<Policy> {
+pub(crate) fn root_policy(path: &Path) -> Res<Policy> {
     if unsafe { libc::geteuid() } != 0 {
         return Err("network_helper_requires_root: coordinator stays unprivileged".into());
     }
@@ -287,6 +287,7 @@ const SOCKET: &str = "/run/readb-network/control.sock";
 pub fn serve(policy_path: &Path, state: &Path) -> Res<()> {
     let p = root_policy(policy_path)?;
     protected_root_directory(state)?;
+    crate::network_install::ensure_complete(state)?;
     let runtime = Path::new("/run/readb-network");
     match fs::create_dir(runtime) {
         Ok(()) => fs::set_permissions(runtime, fs::Permissions::from_mode(0o711))
@@ -313,11 +314,11 @@ pub fn serve(policy_path: &Path, state: &Path) -> Res<()> {
     }
     let socket = UnixListener::bind(SOCKET).map_err(|_| "network_socket_bind_failed")?;
     let name = std::ffi::CString::new(SOCKET).unwrap();
+    fs::set_permissions(SOCKET, fs::Permissions::from_mode(0o600))
+        .map_err(|_| "network_socket_permissions_failed")?;
     if unsafe { libc::chown(name.as_ptr(), p.uid, u32::MAX) } != 0 {
         return Err("network_socket_owner_failed".into());
     }
-    fs::set_permissions(SOCKET, fs::Permissions::from_mode(0o600))
-        .map_err(|_| "network_socket_permissions_failed")?;
     let mut manager = Manager::open(state, p)?;
     let mut kernel = LinuxKernel::new()?;
     // Reapply only recorded missing peers after boot. Keep RPC available for

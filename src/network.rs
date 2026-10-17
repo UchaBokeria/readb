@@ -227,6 +227,7 @@ impl Manager {
         policy.validate()?;
         let hash = policy.hash()?;
         let dir = private_directory(path)?;
+        crate::network_install::ensure_complete_fd(&dir)?;
         let disk = read_state(&dir, c"network.json")?.unwrap_or(State {
             schema: 1,
             policy_sha256: hash.clone(),

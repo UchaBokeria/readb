@@ -13,3 +13,7 @@ Keep README short. Design/history in docs/. Real device proof is separate from t
 Android source/build/acceptance: docs/android.md. Run workspace tests and
 scripts/test-android-jni.sh; the packager must reject4KiB-only JNI libraries.
 APK builds do not prove locked boot, VPN handover or Quest screen unlock.
+
+Root peer helper and file-install boundary: docs/network.md. Privileged binaries
+must be root-owned outside user paths. Root install is a separate phase; never
+clear pending intent or activate units merely because a local build passed.

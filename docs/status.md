@@ -74,3 +74,10 @@ recorded peers; present changed peers, address collisions and unresolved intent
 stop it.135 workspace tests/Clippy/fmt and focused review pass. Blackwall namespace
 smoke also proved missing-peer restoration across helper restart and user denial.
 This simulates lost kernel peers; actual host/device reboot acceptance is pending.
+
+Root-helper file installer adds fixed root paths, hash-addressed executable,
+owned-file receipt, durable intent, offline recovery and startup fence under the
+shared state lock. Unknown/external changes are preserved. It never activates a
+service or alters VPN.146 workspace tests, Clippy/fmt and focused review pass;
+Blackwall root image tests and capability-restricted namespace smoke pass.
+Fresh setup/config creation and actual unit activation still pending.

@@ -30,3 +30,5 @@ pub mod web;
 pub mod network;
 
 pub mod network_runtime;
+
+pub mod network_install;

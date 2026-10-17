@@ -11,6 +11,8 @@ fn help_and_completion_do_not_need_server_or_private_config() {
         vec!["setup", "--help"],
         vec!["network", "--help"],
         vec!["network", "helper", "--help"],
+        vec!["network", "install", "--help"],
+        vec!["network", "install-recover", "--help"],
         vec!["setup", "plan", "--help"],
         vec!["config", "recover", "--help"],
         vec!["completion", "fish"],
@@ -150,4 +152,18 @@ fn network_helper_never_runs_as_a_remote_client() {
     assert!(
         String::from_utf8_lossy(&o.stderr).contains("network_requires_explicit_--local_on_server")
     );
+}
+#[test]
+fn network_installer_refuses_unprivileged_calls_before_touching_system_files() {
+    if unsafe { libc::geteuid() } == 0 {
+        return;
+    }
+    for cmd in ["install", "install-recover"] {
+        let o = Command::new(env!("CARGO_BIN_EXE_readb"))
+            .args(["--local", "network", cmd])
+            .output()
+            .unwrap();
+        assert!(!o.status.success());
+        assert!(String::from_utf8_lossy(&o.stderr).contains("network_install_requires_root"));
+    }
 }
