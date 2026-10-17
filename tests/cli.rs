@@ -9,6 +9,8 @@ fn help_and_completion_do_not_need_server_or_private_config() {
         vec!["action", "--help"],
         vec!["service", "--help"],
         vec!["setup", "--help"],
+        vec!["network", "--help"],
+        vec!["network", "helper", "--help"],
         vec!["setup", "plan", "--help"],
         vec!["config", "recover", "--help"],
         vec!["completion", "fish"],
@@ -135,5 +137,17 @@ fn cancelled_pair_prompt_restores_echo_and_flushes_unsubmitted_code() {
         &buf[..n],
         b"\n",
         "unsubmitted pairing code leaked to the next terminal reader"
+    );
+}
+#[test]
+fn network_helper_never_runs_as_a_remote_client() {
+    let o = Command::new(env!("CARGO_BIN_EXE_readb"))
+        .args(["network", "status"])
+        .env("HOME", "/nonexistent")
+        .output()
+        .unwrap();
+    assert!(!o.status.success());
+    assert!(
+        String::from_utf8_lossy(&o.stderr).contains("network_requires_explicit_--local_on_server")
     );
 }

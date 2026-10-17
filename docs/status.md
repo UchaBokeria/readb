@@ -60,3 +60,11 @@ atomic and unique; ordinary edits check baseline hashes. Uncertain writes fence
 catalog changes. Offline recovery rejects active daemon, external edits and
 unexpected filesystem errors, preserving keys. See setup.md. No live catalog
 mutation or cutover acceptance; fresh setup/apply and helper handover remain.
+
+Narrow root network helper: typed private Unix RPC with kernel UID admission,
+root-owned policy/state ancestry, interface key/address pin, private /32 scope and
+unrelated-peer preservation. Durable intent survives interrupted/ambiguous writes;
+explicit reconcile accepts only recorded kernel snapshots.132 workspace tests and
+Clippy/fmt pass. Real isolated Blackwall namespace passes enrollment/removal, helper
+restart state, conflict and external-edit checks; live mobile unchanged. No live
+helper install, boot restoration or fresh-server apply yet. See network.md.

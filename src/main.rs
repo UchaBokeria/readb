@@ -49,6 +49,11 @@ struct Cli {
 enum Cmd {
     #[command(subcommand, about = "Plan server setup before changing anything")]
     Setup(SetupCmd),
+    #[command(
+        subcommand,
+        about = "Narrow local WireGuard peer helper; never direct client ADB"
+    )]
+    Network(NetworkCmd),
     #[command(about = "Run the coordinator")]
     Daemon {
         #[arg(long)]
@@ -112,6 +117,28 @@ enum Cmd {
     Completion { shell: clap_complete::Shell },
     #[command(about = "Print version")]
     Version,
+}
+#[derive(Subcommand)]
+enum NetworkCmd {
+    Helper {
+        #[arg(long)]
+        policy: PathBuf,
+        #[arg(long)]
+        state: PathBuf,
+    },
+    Status,
+    Enroll {
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        key: String,
+        #[arg(long)]
+        address: std::net::Ipv4Addr,
+    },
+    Rm {
+        id: String,
+    },
+    Reconcile,
 }
 #[derive(Subcommand)]
 enum SetupCmd {
@@ -300,6 +327,34 @@ fn run() -> Res<i32> {
         }
     }
     match &c.command {
+        Cmd::Network(cmd) => {
+            if !c.local {
+                return Err("network_requires_explicit_--local_on_server".into());
+            }
+            use readb::network::Request;
+            use readb::network_runtime::{self, Call};
+            if let NetworkCmd::Helper { policy, state } = cmd {
+                network_runtime::serve(policy, state)?;
+                return Ok(0);
+            }
+            let call = match cmd {
+                NetworkCmd::Status => Call::Status,
+                NetworkCmd::Reconcile => Call::Reconcile,
+                NetworkCmd::Enroll { id, key, address } => Call::Apply {
+                    request: Request::Enroll {
+                        id: id.clone(),
+                        key: key.clone(),
+                        address: *address,
+                    },
+                },
+                NetworkCmd::Rm { id } => Call::Apply {
+                    request: Request::Remove { id: id.clone() },
+                },
+                _ => unreachable!(),
+            };
+            output(&network_runtime::call(call)?);
+            return Ok(0);
+        }
         Cmd::Config(ConfigCmd::Recover { file }) => {
             if !c.local {
                 return Err("catalog_recovery_requires_--local_on_server".into());
