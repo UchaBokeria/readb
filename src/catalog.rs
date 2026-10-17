@@ -135,7 +135,10 @@ fn create_binding(
         let to = std::ffi::CString::new(name.as_os_str().as_bytes())
             .map_err(|_| "catalog_binding_path_invalid")?;
         if unsafe {
-            libc::renameat2(
+            // Use the kernel operation directly: older bundled musl has no
+            // renameat2 wrapper. Never fall back to replacing an existing binding.
+            libc::syscall(
+                libc::SYS_renameat2,
                 libc::AT_FDCWD,
                 from.as_ptr(),
                 libc::AT_FDCWD,

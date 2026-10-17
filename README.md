@@ -8,7 +8,8 @@ View together. One person controls each device. Different devices work in parall
 **In development. No stable installer or release yet.**
 Existing device services stay in place during migration.
 
-Build with `cargo build --locked`. See [CLI](docs/cli.md),
+Build locally with `cargo build --locked`. [Portable builds](docs/build.md).
+See [CLI](docs/cli.md),
 [Android companion](docs/android.md) and [status](docs/status.md).
 
 Noncommercial use only. See [LICENSE](LICENSE).

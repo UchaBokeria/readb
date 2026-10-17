@@ -106,3 +106,16 @@ intent scopes before consuming them and verifies real files/receipts.167 workspa
 tests and Clippy/fmt pass; six composed filesystem tests pass as root on Blackwall.
 No production readb files/units activated; full non-root coordinator setup,
 root activation/runtime network recovery and device migration remain pending.
+
+Selected-user installer runner now has a sealed executing-image path, revalidated
+passwd/home/groups, dropped real/effective/saved IDs and capabilities, no_new_privs
+and a cleared environment. Host168 tests and actual Blackwall root->scriptkid
+probe pass. Portable Rust1.88 musl also passes168 workspace tests; the root probe
+passes on Blackwall with no interpreter/NEEDED ELF dependencies. Local-only accounts
+are the musl acceptance scope; native dynamic GNU supports host NSS.
+
+A static glibc root probe aborted while loading Blackwall libnss_systemd; static
+GNU builds are now rejected. Portable script selects musl. Direct SYS_renameat2
+calls preserve no-replace semantics where the old musl CRT lacks a wrapper.
+This runner is a library prerequisite: complete user-installer journaling, service
+activation/persistence and live companion migration still remain.

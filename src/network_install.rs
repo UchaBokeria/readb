@@ -375,7 +375,10 @@ fn write_at_mode(
             .and_then(|_| f.sync_all())
             .map_err(|_| "network_install_file_sync_failed")?;
         if unsafe {
-            libc::renameat2(
+            // Atomic no-replace must work without a musl CRT wrapper. A
+            // missing kernel operation remains a fenced failure, never replace.
+            libc::syscall(
+                libc::SYS_renameat2,
                 dir.as_raw_fd(),
                 name.as_ptr(),
                 dir.as_raw_fd(),

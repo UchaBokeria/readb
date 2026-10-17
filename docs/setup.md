@@ -86,3 +86,10 @@ command privately; changing owner/home/range/endpoint/binary changes the binding
 
 Host boot also needs a real persistent network provider. An active interface alone
 is insufficient; inspect its configuration and enabled boot unit before activation.
+
+The selected-user execution library uses a sealed copy of the current ELF. Before
+exec it sets the passwd groups and all UID/GID slots, clears capabilities, sets
+no_new_privs and supplies a clean selected-user environment. It never runs a
+user-writable binary as root. Timeout/errors report unconfirmed installation;
+inspect the recorded phase before retry. Full setup orchestration is still pending.
+Portable/local account limits and destination checks: [builds](build.md).
