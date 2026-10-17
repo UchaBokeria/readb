@@ -99,3 +99,10 @@ recovery with shared startup/install fencing.160 workspace tests, Clippy/fmt pas
 focused review found no important issue.14 installer/policy image tests also pass
 as root on Blackwall with temporary root binary cleaned. No live root policy or
 service installed. Setup composition and companion migration remain unfinished.
+
+Composed files stage: `setup files` binds the root journal to the exact owner,
+home, endpoint, policy and executing binary. Explicit recovery checks subordinate
+intent scopes before consuming them and verifies real files/receipts.167 workspace
+tests and Clippy/fmt pass; six composed filesystem tests pass as root on Blackwall.
+No production readb files/units activated; full non-root coordinator setup,
+root activation/runtime network recovery and device migration remain pending.

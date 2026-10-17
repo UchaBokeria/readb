@@ -295,3 +295,31 @@ pub fn bind(
         devices_accepted: false,
     })
 }
+
+impl ApplyPlan {
+    pub fn validate(&self, binary: &[u8]) -> Res<()> {
+        self.owner.validate()?;
+        self.options.validate()?;
+        self.policy.validate()?;
+        let expected = crate::network_install::Plan::new(&self.policy, binary)?;
+        let expected_hash = hash(&(1u8, &self.options, &self.owner, &self.policy, &expected))?;
+        if self.schema != 1
+            || self.plan_sha256 != expected_hash
+            || serde_json::to_vec(&self.root_install).map_err(|_| "setup_apply_encoding_failed")?
+                != serde_json::to_vec(&expected).map_err(|_| "setup_apply_encoding_failed")?
+            || self.owner.uid != self.policy.uid
+            || self.options.interface != self.policy.interface
+            || self.options.address != self.policy.server_address
+            || self.options.prefix != self.policy.prefix
+            || !matches!(self.options.mode, NetworkMode::Reuse)
+            || self.files_installed
+            || self.helper_active
+            || self.coordinator_active
+            || self.network_verified
+            || self.devices_accepted
+        {
+            return Err("setup_apply_intent_mismatch".into());
+        }
+        Ok(())
+    }
+}

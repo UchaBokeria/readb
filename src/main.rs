@@ -152,37 +152,51 @@ enum SetupCmd {
     #[command(
         about = "Inspect this server; print JSON plan and blockers, never change files or VPN"
     )]
-    Plan {
-        #[arg(long, help = "Public WireGuard hostname:port")]
-        endpoint: String,
-        #[arg(long, default_value = "readb0")]
-        interface: String,
-        #[arg(long, default_value = "10.88.0.1")]
-        address: std::net::Ipv4Addr,
-        #[arg(long, default_value_t = 24, value_parser=clap::value_parser!(u8).range(8..=30))]
-        prefix: u8,
-        #[arg(long, default_value_t = 51820, value_parser=clap::value_parser!(u16).range(1..))]
-        listen_port: u16,
+    Plan(SetupOptions),
+    #[command(
+        about = "Install journaled root policy/helper files only; never activate services or change VPN"
+    )]
+    Files {
+        #[command(flatten)]
+        options: SetupOptions,
         #[arg(
             long,
-            help = "Inspect an existing interface; never regenerate its keys or peers"
+            help = "Reconcile recorded files with the exact original intent before replay; preserves external edits"
         )]
-        reuse_interface: bool,
-        #[arg(long, requires_all=["reuse_interface", "range_first", "range_last"], help="Bind installation intent to this non-root passwd user; still read-only")]
-        user: Option<String>,
-        #[arg(
-            long,
-            requires = "user",
-            help = "First unused IPv4 for readb enrollment"
-        )]
-        range_first: Option<std::net::Ipv4Addr>,
-        #[arg(
-            long,
-            requires = "user",
-            help = "Last unused IPv4 for readb enrollment"
-        )]
-        range_last: Option<std::net::Ipv4Addr>,
+        recover: bool,
     },
+}
+#[derive(clap::Args)]
+struct SetupOptions {
+    #[arg(long, help = "Public WireGuard hostname:port")]
+    endpoint: String,
+    #[arg(long, default_value = "readb0")]
+    interface: String,
+    #[arg(long, default_value = "10.88.0.1")]
+    address: std::net::Ipv4Addr,
+    #[arg(long, default_value_t = 24, value_parser=clap::value_parser!(u8).range(8..=30))]
+    prefix: u8,
+    #[arg(long, default_value_t = 51820, value_parser=clap::value_parser!(u16).range(1..))]
+    listen_port: u16,
+    #[arg(
+        long,
+        help = "Inspect an existing interface; never regenerate its keys or peers"
+    )]
+    reuse_interface: bool,
+    #[arg(long, requires_all=["reuse_interface", "range_first", "range_last"], help="Bind installation intent to this non-root passwd user; still read-only")]
+    user: Option<String>,
+    #[arg(
+        long,
+        requires = "user",
+        help = "First unused IPv4 for readb enrollment"
+    )]
+    range_first: Option<std::net::Ipv4Addr>,
+    #[arg(
+        long,
+        requires = "user",
+        help = "Last unused IPv4 for readb enrollment"
+    )]
+    range_last: Option<std::net::Ipv4Addr>,
 }
 #[derive(Subcommand)]
 enum ContextCmd {
@@ -392,21 +406,34 @@ fn run() -> Res<i32> {
             output(&readb::catalog::recover(&client::state_dir()?, file)?);
             return Ok(0);
         }
-        Cmd::Setup(SetupCmd::Plan {
-            endpoint,
-            interface,
-            address,
-            prefix,
-            listen_port,
-            reuse_interface,
-            user,
-            range_first,
-            range_last,
-        }) => {
+        Cmd::Setup(cmd) => {
+            let (options, files, recover) = match cmd {
+                SetupCmd::Plan(options) => (options, false, false),
+                SetupCmd::Files { options, recover } => (options, true, *recover),
+            };
+            let SetupOptions {
+                endpoint,
+                interface,
+                address,
+                prefix,
+                listen_port,
+                reuse_interface,
+                user,
+                range_first,
+                range_last,
+            } = options;
             if !c.local {
                 return Err(
                     "setup_requires_explicit_--local_on_server; PC clients stay SSH-only".into(),
                 );
+            }
+            if files {
+                if unsafe { libc::geteuid() } != 0 {
+                    return Err("setup_files_requires_root_on_server".into());
+                }
+                if user.is_none() || !reuse_interface {
+                    return Err("setup_files_requires_user_and_explicit_existing_interface".into());
+                }
             }
             let owner = user
                 .as_deref()
@@ -439,6 +466,12 @@ fn run() -> Res<i32> {
             } else {
                 plan
             };
+            if files && plan.facts.init != "systemd" {
+                return Err(
+                    "setup_files_systemd_adapter_required: other init adapters are not implemented"
+                        .into(),
+                );
+            }
             let ready = plan.ready;
             if let Some(owner) = owner {
                 if !ready {
@@ -467,7 +500,18 @@ fn run() -> Res<i32> {
                     snapshot,
                     &binary,
                 )?;
-                output(&serde_json::json!({"preflight":plan,"apply_intent":bound,"applied":false}));
+                if files {
+                    let result = if recover {
+                        readb::setup_files::recover(std::path::Path::new("/"), &bound, &binary)?
+                    } else {
+                        readb::setup_files::apply(std::path::Path::new("/"), &bound, &binary)?
+                    };
+                    output(&result);
+                } else {
+                    output(
+                        &serde_json::json!({"preflight":plan,"apply_intent":bound,"applied":false}),
+                    );
+                }
             } else {
                 output(&serde_json::to_value(plan).map_err(|_| "plan_encoding_failed")?);
             }

@@ -617,6 +617,55 @@ impl Installer {
             _ => Err("network_policy_external_edit_preserved".into()),
         }
     }
+    pub fn recover_setup_pending(&mut self, policy: &Policy, plan: &Plan) -> Res<()> {
+        let expected = serde_json::to_vec(plan).map_err(|_| "setup_recovery_encoding_failed")?;
+        let policy_bytes =
+            serde_json::to_vec(policy).map_err(|_| "setup_recovery_encoding_failed")?;
+        if let Some(p) = &self.pending
+            && serde_json::to_vec(&p.plan).map_err(|_| "setup_recovery_encoding_failed")?
+                != expected
+        {
+            return Err("setup_recovery_unrelated_binary_intent_preserved".into());
+        }
+        if let Some(p) = &self.pending_policy
+            && serde_json::to_vec(&p.policy).map_err(|_| "setup_recovery_encoding_failed")?
+                != policy_bytes
+        {
+            return Err("setup_recovery_unrelated_policy_intent_preserved".into());
+        }
+        // Verify both scopes before consuming either durable intent.
+        if self.pending_policy.is_some() {
+            self.recover_policy()?;
+        }
+        if self.pending.is_some() {
+            self.recover()?;
+        }
+        Ok(())
+    }
+    pub fn verify_setup_files(&self, policy: &Policy, plan: &Plan) -> Res<()> {
+        if self.fenced() {
+            return Err("network_setup_files_cleanup_unknown".into());
+        }
+        let bytes = serde_json::to_vec(policy).map_err(|_| "network_policy_encoding_failed")?;
+        if self.root.read(Path::new(POLICY_FILE))?.as_ref() != Some(&bytes)
+            || self.root.mode(Path::new(POLICY_FILE))? != Some(0o600)
+            || self.receipt()?.as_ref() != Some(&plan.receipt()?)
+            || self.root.read(Path::new(UNIT))?.as_deref() != Some(plan.unit().as_bytes())
+            || self.root.mode(Path::new(UNIT))? != Some(0o600)
+            || read_at(&self.state, POLICY_RECEIPT.as_ref())?.as_ref()
+                != Some(
+                    &serde_json::to_vec(&hash(&bytes))
+                        .map_err(|_| "network_policy_encoding_failed")?,
+                )
+        {
+            return Err("network_setup_files_verification_failed".into());
+        }
+        self.verify_release(&plan.receipt()?)?;
+        self.root.sync(Path::new(POLICY_FILE))?;
+        self.root.sync(Path::new(UNIT))?;
+        self.root.sync(Path::new(&plan.binary_path()[1..]))?;
+        Ok(())
+    }
     fn verify_release(&self, r: &Receipt) -> Res<()> {
         let path = format!(
             "usr/local/lib/readb-network/releases/{}/readb",
@@ -856,6 +905,22 @@ pub(crate) fn ensure_complete_fd(dir: &File) -> Res<()> {
         }
     }
     Ok(())
+}
+
+/// Protected setup journal directory. Uses the same no-symlink ancestry checks
+/// as root installation; test image roots are explicit and never CLI inputs.
+pub fn setup_journal_directory(image_root: &Path) -> Res<std::path::PathBuf> {
+    let root = Root::open(image_root)?;
+    let dir = root
+        .directory(Path::new("var/lib/readb-setup"), true)?
+        .ok_or("setup_journal_missing")?;
+    let m = dir
+        .metadata()
+        .map_err(|_| "setup_journal_metadata_failed")?;
+    if m.mode() & 0o077 != 0 {
+        return Err("setup_private_journal_required".into());
+    }
+    Ok(image_root.join("var/lib/readb-setup"))
 }
 
 #[cfg(test)]

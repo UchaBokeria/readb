@@ -239,3 +239,21 @@ fn cli_requires_explicit_local_and_complete_owner_range() {
     assert!(!root.status.success());
     assert!(String::from_utf8_lossy(&root.stderr).contains("setup_nonroot_owner"));
 }
+
+#[test]
+fn root_files_cli_has_explicit_recovery_and_rejects_client_routing() {
+    use std::process::Command;
+    let bin = env!("CARGO_BIN_EXE_readb");
+    let help = Command::new(bin)
+        .args(["setup", "files", "--help"])
+        .output()
+        .unwrap();
+    assert!(help.status.success());
+    assert!(String::from_utf8_lossy(&help.stdout).contains("--recover"));
+    let denied = Command::new(bin)
+        .args(["setup", "files", "--endpoint", "vpn.example.org:51820"])
+        .output()
+        .unwrap();
+    assert!(!denied.status.success());
+    assert!(String::from_utf8_lossy(&denied.stderr).contains("--local_on_server"));
+}

@@ -202,6 +202,22 @@ impl Journal {
         }
         result
     }
+    pub fn running(&self) -> Option<Phase> {
+        self.state.running
+    }
+    /// Only crate setup composition may reconcile. Caller first repeats real
+    /// read-only admission, or verifies every journaled network file/receipt.
+    pub(crate) fn reconcile_verified(&mut self, phase: Phase) -> Res<()> {
+        if !matches!(
+            phase,
+            Phase::Preflight | Phase::Dependencies | Phase::Network
+        ) || self.state.running != Some(phase)
+        {
+            return Err("setup_reconciliation_phase_mismatch".into());
+        }
+        self.admitted = Some(phase);
+        self.complete(phase)
+    }
     pub fn completed(&self, phase: Phase) -> bool {
         self.state.completed.contains(&phase)
     }

@@ -69,3 +69,20 @@ passwd account, owned nonsymlink home, selected-user access, exact interface pin
 and peer overlaps. The intent binds owner/home, network options, policy and the
 executing binary hash. The peer observation has a separate baseline hash; apply
 must inspect again. Root probes never execute tools from writable user paths.
+
+## Install root files
+
+Development phase for an existing systemd/WireGuard server. Repeat the bound plan
+with `setup files` instead of `setup plan`. Requires root, `--local`, `--user`,
+`--reuse-interface` and the same endpoint/range flags. This installs the private
+policy and immutable helper/unit files. It does not activate a service, switch VPN
+or enroll a device. JSON keeps those acceptance fields false.
+
+An interruption needs the original binary and exact flags plus `--recover`.
+Recovery validates each subordinate policy/binary intent and its owned artifacts
+before replay. Another upgrade's intent or an external edit stays blocked. A
+completed journal is rechecked against real files on every retry. Save the original
+command privately; changing owner/home/range/endpoint/binary changes the binding.
+
+Host boot also needs a real persistent network provider. An active interface alone
+is insufficient; inspect its configuration and enabled boot unit before activation.
