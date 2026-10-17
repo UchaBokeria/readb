@@ -90,3 +90,7 @@ Activation/unit-manager acceptance belongs to the next setup phase.
 filesystem tests also passed as root on Blackwall in isolated image directories.
 The namespace helper passed with only CAP_NET_ADMIN and CAP_CHOWN. No production
 unit installation/activation, host reboot, fresh setup or device cutover proved.
+
+Runtime interface restart remains a setup gate: startup restore is tested, but
+a WireGuard restart while the helper stays running needs explicit recovery wiring
+and acceptance. An active interface alone does not prove boot persistence.

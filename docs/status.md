@@ -81,3 +81,7 @@ shared state lock. Unknown/external changes are preserved. It never activates a
 service or alters VPN.146 workspace tests, Clippy/fmt and focused review pass;
 Blackwall root image tests and capability-restricted namespace smoke pass.
 Fresh setup/config creation and actual unit activation still pending.
+
+Declared MSRV verified: Rust1.88.0 passed all146 workspace tests on the PC,
+in addition to host Rust1.98 checks. Toolchain was checksum-verified and installed
+only in ignored isolated build output; normal host/Android toolchains unchanged.
