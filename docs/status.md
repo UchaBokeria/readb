@@ -32,3 +32,10 @@ normally, but Quest capture is black and input has no focused app/window; headse
 visual acceptance remains blocked. No new VPN/report startup or real profile import. Desktop and390px preview checked through owner Chrome extension.
 Source public main/submodule exist; no live readb cutover or stable release.
 See android.md for build and pending platform acceptance.
+
+Fresh setup foundation: `--local setup plan` now reports typed read-only preflight
+with stable intent hash and named blockers. Existing-interface reuse checks actual
+WireGuard type/address/listener; whole-subnet validation prevents public routes.
+Private phase journal rejects concurrent writers, changed plans, unsafe paths and
+completion of an interrupted phase after restart. No apply/root helper yet.
+See setup.md; this is not fresh-server or replacement acceptance.

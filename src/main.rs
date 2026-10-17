@@ -47,6 +47,8 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Cmd {
+    #[command(subcommand, about = "Plan server setup before changing anything")]
+    Setup(SetupCmd),
     #[command(about = "Run the coordinator")]
     Daemon {
         #[arg(long)]
@@ -110,6 +112,29 @@ enum Cmd {
     Completion { shell: clap_complete::Shell },
     #[command(about = "Print version")]
     Version,
+}
+#[derive(Subcommand)]
+enum SetupCmd {
+    #[command(
+        about = "Inspect this server; print JSON plan and blockers, never change files or VPN"
+    )]
+    Plan {
+        #[arg(long, help = "Public WireGuard hostname:port")]
+        endpoint: String,
+        #[arg(long, default_value = "readb0")]
+        interface: String,
+        #[arg(long, default_value = "10.88.0.1")]
+        address: std::net::Ipv4Addr,
+        #[arg(long, default_value_t = 24, value_parser=clap::value_parser!(u8).range(8..=30))]
+        prefix: u8,
+        #[arg(long, default_value_t = 51820, value_parser=clap::value_parser!(u16).range(1..))]
+        listen_port: u16,
+        #[arg(
+            long,
+            help = "Inspect an existing interface; never regenerate its keys or peers"
+        )]
+        reuse_interface: bool,
+    },
 }
 #[derive(Subcommand)]
 enum ContextCmd {
@@ -268,6 +293,40 @@ fn run() -> Res<i32> {
         }
     }
     match &c.command {
+        Cmd::Setup(SetupCmd::Plan {
+            endpoint,
+            interface,
+            address,
+            prefix,
+            listen_port,
+            reuse_interface,
+        }) => {
+            if !c.local {
+                return Err(
+                    "setup_requires_explicit_--local_on_server; PC clients stay SSH-only".into(),
+                );
+            }
+            let home = PathBuf::from(std::env::var_os("HOME").ok_or("HOME_unavailable")?);
+            if !home.is_absolute() {
+                return Err("absolute_HOME_required".into());
+            }
+            let options = readb::setup::Options {
+                endpoint: endpoint.clone(),
+                interface: interface.clone(),
+                address: *address,
+                prefix: *prefix,
+                listen_port: *listen_port,
+                mode: if *reuse_interface {
+                    readb::setup::NetworkMode::Reuse
+                } else {
+                    readb::setup::NetworkMode::Create
+                },
+            };
+            let plan = readb::setup::inspect(options, &home)?;
+            let ready = plan.ready;
+            output(&serde_json::to_value(plan).map_err(|_| "plan_encoding_failed")?);
+            return Ok(if ready { 0 } else { 78 });
+        }
         Cmd::Version => {
             println!("readb {}", env!("CARGO_PKG_VERSION"));
             return Ok(0);

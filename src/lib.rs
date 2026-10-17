@@ -20,5 +20,7 @@ pub mod service;
 
 pub mod events;
 
+pub mod setup;
+pub mod setup_journal;
 pub mod skills;
 pub mod web;

@@ -8,6 +8,8 @@ fn help_and_completion_do_not_need_server_or_private_config() {
         vec!["context", "--help"],
         vec!["action", "--help"],
         vec!["service", "--help"],
+        vec!["setup", "--help"],
+        vec!["setup", "plan", "--help"],
         vec!["completion", "fish"],
     ] {
         let o = Command::new(env!("CARGO_BIN_EXE_readb"))
@@ -22,6 +24,18 @@ fn help_and_completion_do_not_need_server_or_private_config() {
             String::from_utf8_lossy(&o.stderr)
         );
     }
+}
+#[test]
+fn setup_requires_explicit_server_local_scope() {
+    let o = Command::new(env!("CARGO_BIN_EXE_readb"))
+        .args(["setup", "plan", "--endpoint", "vpn.example.org:51820"])
+        .env("HOME", "/nonexistent")
+        .output()
+        .unwrap();
+    assert!(!o.status.success());
+    assert!(
+        String::from_utf8_lossy(&o.stderr).contains("setup_requires_explicit_--local_on_server")
+    );
 }
 #[test]
 fn direct_device_transport_has_no_client_fallback() {
