@@ -47,3 +47,9 @@ manual pinned connect now returns an error.108 workspace tests and Clippy/fmt pa
 independent lifecycle review found no remaining scoped issue. New real two-host
 retry is pending; this is not device acceptance. Catalog persistence retry/ambiguity
 remains an explicit blocker before cutover.
+
+Actual Blackwall staging with source2bf0b9a passed fresh secure pin and simultaneous
+PC/Blackwall viewer reads with one controller. Competing controller got the real
+owner/job conflict; observer-only profile denied a harmless non-profile command.
+All leases released; transient service stopped and its isolated listener closed.
+Legacy5038 stayed healthy. No companion/report/VPN or production service cutover.
