@@ -22,7 +22,7 @@ fn setup() -> (Arc<Backend>, String) {
                 r##"#!/bin/sh
 case "$*" in
 *ro.serialno*) echo fixture;;
-*) echo $$ > "${ADB_VENDOR_KEYS%/*}/started"; exec sleep 30;;
+*) echo $$ > "${ADB_VENDOR_KEYS%/*}/started.tmp"; mv "${ADB_VENDOR_KEYS%/*}/started.tmp" "${ADB_VENDOR_KEYS%/*}/started"; exec sleep 30;;
 esac
 "##,
             )

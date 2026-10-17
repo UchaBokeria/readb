@@ -168,6 +168,20 @@ enum SetupCmd {
             help = "Inspect an existing interface; never regenerate its keys or peers"
         )]
         reuse_interface: bool,
+        #[arg(long, requires_all=["reuse_interface", "range_first", "range_last"], help="Bind installation intent to this non-root passwd user; still read-only")]
+        user: Option<String>,
+        #[arg(
+            long,
+            requires = "user",
+            help = "First unused IPv4 for readb enrollment"
+        )]
+        range_first: Option<std::net::Ipv4Addr>,
+        #[arg(
+            long,
+            requires = "user",
+            help = "Last unused IPv4 for readb enrollment"
+        )]
+        range_last: Option<std::net::Ipv4Addr>,
     },
 }
 #[derive(Subcommand)]
@@ -385,13 +399,23 @@ fn run() -> Res<i32> {
             prefix,
             listen_port,
             reuse_interface,
+            user,
+            range_first,
+            range_last,
         }) => {
             if !c.local {
                 return Err(
                     "setup_requires_explicit_--local_on_server; PC clients stay SSH-only".into(),
                 );
             }
-            let home = PathBuf::from(std::env::var_os("HOME").ok_or("HOME_unavailable")?);
+            let owner = user
+                .as_deref()
+                .map(readb::setup_apply::Owner::resolve)
+                .transpose()?;
+            let home = match &owner {
+                Some(o) => o.home.clone(),
+                None => PathBuf::from(std::env::var_os("HOME").ok_or("HOME_unavailable")?),
+            };
             if !home.is_absolute() {
                 return Err("absolute_HOME_required".into());
             }
@@ -408,8 +432,45 @@ fn run() -> Res<i32> {
                 },
             };
             let plan = readb::setup::inspect(options, &home)?;
+            let plan = if let Some(owner) = &owner {
+                let mut facts = plan.facts;
+                facts.storage_writable = owner.can_write_home()?;
+                readb::setup::build_plan(plan.options, facts)?
+            } else {
+                plan
+            };
             let ready = plan.ready;
-            output(&serde_json::to_value(plan).map_err(|_| "plan_encoding_failed")?);
+            if let Some(owner) = owner {
+                if !ready {
+                    output(&serde_json::to_value(plan).map_err(|_| "plan_encoding_failed")?);
+                    return Ok(78);
+                }
+                use readb::network::Kernel;
+                let mut kernel = readb::network_runtime::LinuxKernel::new()?;
+                let policy = readb::network::Policy {
+                    schema: 1,
+                    uid: owner.uid,
+                    interface: plan.options.interface.clone(),
+                    server_key: kernel.public_key(&plan.options.interface)?,
+                    server_address: plan.options.address,
+                    prefix: plan.options.prefix,
+                    first: range_first.ok_or("range_first_required")?,
+                    last: range_last.ok_or("range_last_required")?,
+                };
+                let snapshot = kernel.snapshot(&policy)?;
+                let binary =
+                    std::fs::read("/proc/self/exe").map_err(|_| "executing_binary_unavailable")?;
+                let bound = readb::setup_apply::bind(
+                    plan.options.clone(),
+                    owner,
+                    policy,
+                    snapshot,
+                    &binary,
+                )?;
+                output(&serde_json::json!({"preflight":plan,"apply_intent":bound,"applied":false}));
+            } else {
+                output(&serde_json::to_value(plan).map_err(|_| "plan_encoding_failed")?);
+            }
             return Ok(if ready { 0 } else { 78 });
         }
         Cmd::Version => {

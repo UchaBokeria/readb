@@ -85,3 +85,11 @@ Fresh setup/config creation and actual unit activation still pending.
 Declared MSRV verified: Rust1.88.0 passed all146 workspace tests on the PC,
 in addition to host Rust1.98 checks. Toolchain was checksum-verified and installed
 only in ignored isolated build output; normal host/Android toolchains unchanged.
+
+Setup intent prerequisite: selected passwd user/home/GID, executing binary, unused
+enrollment range and exact server interface are bound by a read-only plan. Root
+probes reject user-writable executables and test home access after dropping UID/GID.
+155 workspace tests pass; final Clippy/fmt pass and focused review found no further
+important issues. A root-owned temporary static candidate on Blackwall passed
+existing-mobile plan checks using a clearly synthetic endpoint; no files installed,
+service activated or peers changed. Production setup apply remains pending.

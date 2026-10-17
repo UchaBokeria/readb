@@ -17,6 +17,11 @@ pub struct InstallPlan {
     pub unit: String,
     pub server: bool,
 }
+// The filename can be replaced by a concurrent build/upgrade. Linux keeps the
+// running inode available; hash and install those same executing bytes.
+fn executing_bytes() -> Res<Vec<u8>> {
+    fs::read("/proc/self/exe").map_err(|_| "current_binary_unreadable".into())
+}
 fn safe_path(p: &Path) -> bool {
     p.is_absolute()
         && !p
@@ -30,8 +35,7 @@ pub fn plan(home: &Path, prefix: &Path, server: bool) -> Res<InstallPlan> {
         return Err("absolute_safe_install_paths_required".into());
     }
     use sha2::Digest;
-    let current = std::env::current_exe().map_err(|_| "current_binary_unavailable")?;
-    let digest = sha2::Sha256::digest(fs::read(current).map_err(|_| "current_binary_unreadable")?);
+    let digest = sha2::Sha256::digest(executing_bytes()?);
     let digest = digest
         .iter()
         .map(|b| format!("{b:02x}"))
@@ -103,8 +107,7 @@ pub fn install(p: &InstallPlan, home: &Path, dry_run: bool) -> Res<Value> {
     let binary = Path::new(&p.binary);
     let parent = binary.parent().ok_or("invalid_install_path")?;
     let link = Path::new(&p.link);
-    let current = std::env::current_exe().map_err(|_| "current_binary_unavailable")?;
-    let bytes = fs::read(&current).map_err(|_| "current_binary_unreadable")?;
+    let bytes = executing_bytes()?;
     // Complete preflight before switching any live command or service definition.
     if let Ok(meta) = fs::symlink_metadata(link) {
         if !meta.file_type().is_symlink() {

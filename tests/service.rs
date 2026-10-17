@@ -50,3 +50,48 @@ fn client_install_is_repeatable_and_never_overwrites_an_unmanaged_command() {
         b"owner command"
     );
 }
+
+#[test]
+fn installer_reads_executing_inode_after_its_path_is_removed() {
+    use std::{fs, process::Command};
+    if std::env::var_os("READB_SOURCE_FIXTURE").is_some() {
+        let exe = std::env::current_exe().unwrap();
+        assert!(exe.starts_with(std::env::temp_dir()));
+        assert!(
+            exe.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("readb-source-fixture-")
+        );
+        fs::remove_file(exe).unwrap();
+        let p = plan(
+            Path::new("/home/fixture"),
+            Path::new("/home/fixture/readb"),
+            false,
+        );
+        assert!(
+            p.is_ok(),
+            "executing inode must remain readable: {}",
+            p.err().unwrap_or_default()
+        );
+        return;
+    }
+    let path =
+        std::env::temp_dir().join(format!("readb-source-fixture-{}", readb::policy::random()));
+    fs::copy(std::env::current_exe().unwrap(), &path).unwrap();
+    let result = Command::new(&path)
+        .args([
+            "--exact",
+            "installer_reads_executing_inode_after_its_path_is_removed",
+            "--nocapture",
+        ])
+        .env("READB_SOURCE_FIXTURE", "1")
+        .output()
+        .unwrap();
+    let _ = fs::remove_file(path);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stdout)
+    );
+}

@@ -52,3 +52,20 @@ to load the config that actually reached disk. Other errors keep recovery fenced
 Keep the config private (0600), in an owned directory without other writers. A
 hidden `.readb-state-*.json` marker binds each config to one state directory.
 Leave that marker in place. This recovery does not clear a device cleanup fence.
+
+## Bind a setup intent
+
+For an existing interface, root can also bind the plan to its future service user
+and an unused enrollment range:
+
+```sh
+sudo readb --local setup plan --endpoint vpn.example.org:51820 \
+  --reuse-interface --interface mobile --address 10.99.0.2 \
+  --user scriptkid --range-first 10.99.0.100 --range-last 10.99.0.150
+```
+
+Use your real endpoint and free range. This is still read-only. It validates the
+passwd account, owned nonsymlink home, selected-user access, exact interface pin
+and peer overlaps. The intent binds owner/home, network options, policy and the
+executing binary hash. The peer observation has a separate baseline hash; apply
+must inspect again. Root probes never execute tools from writable user paths.

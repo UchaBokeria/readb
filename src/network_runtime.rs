@@ -98,7 +98,7 @@ pub fn handle(s: &mut UnixStream, m: &mut Manager, k: &mut impl Kernel) -> Res<(
         .map_err(|_| "network_reply_write_failed")?;
     Ok(())
 }
-fn program(paths: &[&str]) -> Res<PathBuf> {
+pub(crate) fn program(paths: &[&str]) -> Res<PathBuf> {
     for path in paths {
         let p = Path::new(path);
         let Ok(p) = p.canonicalize() else { continue };
@@ -131,6 +131,24 @@ impl LinuxKernel {
             wg: program(&["/usr/bin/wg", "/usr/sbin/wg"])?,
             ip: program(&["/usr/bin/ip", "/usr/sbin/ip", "/sbin/ip"])?,
         })
+    }
+    pub fn public_key(&self, interface: &str) -> Res<String> {
+        if interface.is_empty()
+            || interface.len() > 15
+            || !interface
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || b"_-".contains(&c))
+        {
+            return Err("network_interface_name_invalid".into());
+        }
+        let raw = Self::command(&self.wg, &["show", interface, "public-key"])?;
+        let key = std::str::from_utf8(&raw)
+            .map_err(|_| "network_invalid_snapshot")?
+            .trim();
+        if !valid_key(key) {
+            return Err("network_interface_key_invalid".into());
+        }
+        Ok(key.into())
     }
     fn command(p: &Path, args: &[&str]) -> Res<Vec<u8>> {
         let mut c = Command::new(p);
@@ -363,5 +381,20 @@ mod tests {
         assert!(protected_root_directory(Path::new("/tmp")).is_err());
         assert!(protected_root_directory(Path::new("relative")).is_err());
         assert!(protected_root_directory(Path::new("/run/../tmp")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod trusted_probe_tests {
+    #[test]
+    fn root_probe_refuses_user_executables_and_accepts_trusted_system_binary() {
+        use std::os::unix::fs::PermissionsExt;
+        let path =
+            std::env::temp_dir().join(format!("readb-untrusted-probe-{}", crate::policy::random()));
+        std::fs::write(&path, b"#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(super::program(&[path.to_str().unwrap()]).is_err());
+        std::fs::remove_file(path).unwrap();
+        assert!(super::program(&["/usr/bin/true", "/bin/true"]).is_ok());
     }
 }

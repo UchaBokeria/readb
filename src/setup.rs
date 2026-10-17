@@ -255,13 +255,20 @@ fn executable(name: &str) -> Option<String> {
         .map(|p| p.to_string_lossy().into_owned())
 }
 fn command(program: &str, args: &[&str]) -> Option<Vec<u8>> {
-    let c = runner::capture(
-        program,
-        &args.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
-        Duration::from_secs(3),
-        1024 * 1024,
-    )
-    .ok()?;
+    // A root preflight must never run an executable from an owner's writable
+    // HOME/PATH. Unprivileged probes can still inspect a user-installed SDK.
+    let program = if unsafe { libc::geteuid() } == 0 {
+        crate::network_runtime::program(&[program]).ok()?
+    } else {
+        std::path::PathBuf::from(program)
+    };
+    let mut command = std::process::Command::new(program);
+    command
+        .args(args)
+        .env_clear()
+        .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
+        .env("LANG", "C");
+    let c = runner::capture_cmd(command, Duration::from_secs(3), 1024 * 1024).ok()?;
     c.ok.then_some(c.out)
 }
 fn free_bytes(path: &Path) -> Option<u64> {
