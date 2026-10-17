@@ -127,6 +127,7 @@ enum NetworkCmd {
         state: PathBuf,
     },
     Status,
+    Restore,
     Enroll {
         #[arg(long)]
         id: String,
@@ -339,6 +340,7 @@ fn run() -> Res<i32> {
             }
             let call = match cmd {
                 NetworkCmd::Status => Call::Status,
+                NetworkCmd::Restore => Call::Restore,
                 NetworkCmd::Reconcile => Call::Reconcile,
                 NetworkCmd::Enroll { id, key, address } => Call::Apply {
                     request: Request::Enroll {

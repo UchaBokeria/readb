@@ -118,6 +118,9 @@ pub enum Request {
     Remove {
         id: String,
     },
+    Restore {
+        id: String,
+    },
 }
 pub trait Kernel {
     fn snapshot(&mut self, policy: &Policy) -> Res<Snapshot>;
@@ -289,6 +292,9 @@ impl Manager {
         Ok(())
     }
     fn snapshot_valid(&self, s: &Snapshot) -> Res<()> {
+        self.snapshot_check(s, false)
+    }
+    fn snapshot_check(&self, s: &Snapshot, allow_missing: bool) -> Res<()> {
         if s.server_key != self.policy.server_key
             || s.addresses
                 != vec![format!(
@@ -317,14 +323,32 @@ impl Manager {
             }
         }
         for peer in self.state.devices.values() {
+            if allow_missing && !s.peers.contains_key(&peer.key) {
+                continue;
+            }
             if s.peers.get(&peer.key) != Some(&vec![format!("{}/32", peer.address)]) {
                 return Err("network_managed_peer_changed: preserve external edits".into());
             }
         }
         Ok(())
     }
+    fn route_available(before: &Snapshot, address: Ipv4Addr) -> Res<()> {
+        for routes in before.peers.values() {
+            for route in routes {
+                let (a, p) = route.split_once('/').ok_or("network_route_invalid")?;
+                if let Ok(a) = a.parse::<Ipv4Addr>() {
+                    let p = p.parse::<u8>().map_err(|_| "network_route_invalid")?;
+                    let mask = if p == 0 { 0 } else { u32::MAX << (32 - p) };
+                    if u32::from(a) & mask == u32::from(address) & mask {
+                        return Err("network_address_overlap".into());
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
     fn plan(&self, r: &Request, before: &Snapshot) -> Res<ChangePlan> {
-        self.snapshot_valid(before)?;
+        self.snapshot_check(before, matches!(r, Request::Restore { .. }))?;
         let mut devices = self.state.devices.clone();
         let mut after = before.clone();
         match r {
@@ -337,18 +361,7 @@ impl Manager {
                 if devices.contains_key(id) || before.peers.contains_key(key) {
                     return Err("network_peer_already_exists: no automatic adoption".into());
                 }
-                for routes in before.peers.values() {
-                    for route in routes {
-                        let (a, p) = route.split_once('/').ok_or("network_route_invalid")?;
-                        if let Ok(a) = a.parse::<Ipv4Addr>() {
-                            let p = p.parse::<u8>().map_err(|_| "network_route_invalid")?;
-                            let mask = if p == 0 { 0 } else { u32::MAX << (32 - p) };
-                            if u32::from(a) & mask == u32::from(*address) & mask {
-                                return Err("network_address_overlap".into());
-                            }
-                        }
-                    }
-                }
+                Self::route_available(before, *address)?;
                 devices.insert(id.clone(), peer);
                 if devices.len() > 128 {
                     return Err("network_device_limit".into());
@@ -357,6 +370,19 @@ impl Manager {
                     .peers
                     .insert(key.clone(), vec![format!("{address}/32")]);
                 Ok((devices, after, key.clone(), Some(*address)))
+            }
+            Request::Restore { id } => {
+                let peer = devices.get(id).ok_or("network_peer_not_managed")?;
+                if before.peers.contains_key(&peer.key) {
+                    return Err("network_peer_already_present".into());
+                }
+                Self::route_available(before, peer.address)?;
+                after
+                    .peers
+                    .insert(peer.key.clone(), vec![format!("{}/32", peer.address)]);
+                let key = peer.key.clone();
+                let address = peer.address;
+                Ok((devices, after, key, Some(address)))
             }
             Request::Remove { id } => {
                 let peer = devices.remove(id).ok_or("network_peer_not_managed")?;
@@ -447,6 +473,9 @@ impl Manager {
     }
     pub fn apply(&mut self, uid: u32, r: Request, k: &mut impl Kernel) -> Res<()> {
         self.policy.admit(uid)?;
+        if matches!(r, Request::Restore { .. }) && uid != 0 {
+            return Err("network_restore_requires_root".into());
+        }
         if self.fenced() {
             return Err("network_cleanup_unknown: reconcile before another write".into());
         }
@@ -473,6 +502,27 @@ impl Manager {
         if let Err(e) = self.finish(&old) {
             self.state = old;
             return Err(e);
+        }
+        Ok(())
+    }
+    pub fn restore(&mut self, uid: u32, k: &mut impl Kernel) -> Res<()> {
+        if uid != 0 {
+            return Err("network_restore_requires_root".into());
+        }
+        if self.fenced() {
+            return Err("network_cleanup_unknown: reconcile before restore".into());
+        }
+        let snapshot = k.snapshot(&self.policy)?;
+        self.snapshot_check(&snapshot, true)?;
+        let missing: Vec<String> = self
+            .state
+            .devices
+            .iter()
+            .filter(|(_, p)| !snapshot.peers.contains_key(&p.key))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in missing {
+            self.apply(0, Request::Restore { id }, k)?;
         }
         Ok(())
     }

@@ -68,3 +68,9 @@ explicit reconcile accepts only recorded kernel snapshots.132 workspace tests an
 Clippy/fmt pass. Real isolated Blackwall namespace passes enrollment/removal, helper
 restart state, conflict and external-edit checks; live mobile unchanged. No live
 helper install, boot restoration or fresh-server apply yet. See network.md.
+
+Root-only per-peer restore now runs on helper startup. It restores only missing
+recorded peers; present changed peers, address collisions and unresolved intent
+stop it.135 workspace tests/Clippy/fmt and focused review pass. Blackwall namespace
+smoke also proved missing-peer restoration across helper restart and user denial.
+This simulates lost kernel peers; actual host/device reboot acceptance is pending.

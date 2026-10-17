@@ -1,7 +1,7 @@
 # Network helper
 
 Development stage. Existing-interface reuse only. No live helper installed yet.
-Fresh provisioning and boot restoration are still pending.
+Fresh provisioning and actual host-boot acceptance are still pending.
 
 The coordinator stays unprivileged. A separate root helper accepts typed peer
 requests on `/run/readb-network/control.sock`. It admits root or one configured
@@ -35,6 +35,8 @@ readb --local network status
 readb --local network enroll --id phone --key PUBLIC_KEY --address DEVICE_IP
 readb --local network rm phone
 readb --local network reconcile
+# Root only: restore missing recorded peers
+sudo readb --local network restore
 ```
 
 PC users reach the server over SSH. This command does not create client VPN/ADB
@@ -48,7 +50,14 @@ before or after state. It never automatically rolls back an external edit.
 Root operators must coordinate direct WireGuard edits; the kernel has no atomic
 compare-and-set for a whole peer snapshot. Post-write drift is detected and fenced.
 
-132 workspace tests, Clippy and formatting pass. An isolated Blackwall network
+135 workspace tests, Clippy and formatting pass. An isolated Blackwall network
 namespace passed real root-helper RPC, unprivileged enrollment/removal, restart
 state, adoption denial, unrelated-peer preservation and external-edit refusal.
 No live VPN change, fresh install, boot restoration or device cutover is proved.
+
+On helper startup, root restores only missing peers already in its manifest, one
+journaled peer at a time. Existing changed peers and conflicting external routes
+are left alone. An unresolved intent keeps RPC available for status/reconcile;
+startup never silently clears it. Ordinary clients cannot call either restore
+entry point. Isolated tests removed a managed peer while stopped, then verified
+startup restored it. No actual Blackwall or Android reboot was performed.

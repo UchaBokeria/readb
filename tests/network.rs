@@ -279,3 +279,71 @@ fn socket_client_cannot_claim_another_uid() {
     assert_eq!(k.calls, 0);
     std::fs::remove_dir_all(p).unwrap();
 }
+#[test]
+fn boot_restore_is_root_only_and_readds_only_missing_managed_peers() {
+    let p = state();
+    let mut k = kernel();
+    let unrelated = k.snapshot.peers.clone();
+    {
+        let mut m = Manager::open(&p, policy()).unwrap();
+        m.apply(1000, enroll(), &mut k).unwrap();
+    }
+    k.snapshot.peers.remove(&key('C'));
+    let mut m = Manager::open(&p, policy()).unwrap();
+    assert!(m.restore(1000, &mut k).is_err());
+    let before = k.calls;
+    m.restore(0, &mut k).unwrap();
+    assert_eq!(k.calls, before + 1);
+    assert!(k.snapshot.peers.contains_key(&key('C')));
+    assert_eq!(k.snapshot.peers.get(&key('B')), unrelated.get(&key('B')));
+    m.restore(0, &mut k).unwrap();
+    assert_eq!(
+        k.calls,
+        before + 1,
+        "already present peers must not be touched"
+    );
+    k.snapshot
+        .peers
+        .insert(key('C'), vec!["10.88.0.11/32".into()]);
+    assert!(m.restore(0, &mut k).is_err());
+    assert_eq!(k.calls, before + 1);
+    std::fs::remove_dir_all(p).unwrap();
+}
+#[test]
+fn boot_restore_never_steals_a_new_external_route() {
+    let p = state();
+    let mut k = kernel();
+    let mut m = Manager::open(&p, policy()).unwrap();
+    m.apply(1000, enroll(), &mut k).unwrap();
+    k.snapshot.peers.remove(&key('C'));
+    k.snapshot
+        .peers
+        .insert(key('D'), vec!["10.88.0.10/32".into()]);
+    let before = k.calls;
+    assert!(m.restore(0, &mut k).is_err());
+    assert_eq!(k.calls, before);
+    assert!(!k.snapshot.peers.contains_key(&key('C')));
+    std::fs::remove_dir_all(p).unwrap();
+}
+#[test]
+fn interrupted_boot_restore_preserves_manifest_and_recovers_without_adoption() {
+    let p = state();
+    let mut k = kernel();
+    {
+        let mut m = Manager::open(&p, policy()).unwrap();
+        m.apply(1000, enroll(), &mut k).unwrap();
+        k.snapshot.peers.remove(&key('C'));
+        k.fail = true;
+        assert!(m.restore(0, &mut k).is_err());
+        assert!(m.fenced());
+    }
+    let mut m = Manager::open(&p, policy()).unwrap();
+    assert!(m.fenced());
+    assert_eq!(m.devices().len(), 1);
+    k.fail = false;
+    m.reconcile(0, &mut k).unwrap();
+    m.restore(0, &mut k).unwrap();
+    assert!(!m.fenced());
+    assert!(k.snapshot.peers.contains_key(&key('C')));
+    std::fs::remove_dir_all(p).unwrap();
+}

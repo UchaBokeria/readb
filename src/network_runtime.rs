@@ -26,6 +26,7 @@ use std::{
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Call {
     Status,
+    Restore,
     Reconcile,
     Apply { request: Request },
 }
@@ -73,6 +74,10 @@ pub fn handle(s: &mut UnixStream, m: &mut Manager, k: &mut impl Kernel) -> Res<(
         }
         match rpc.request {
             Call::Status => m.status(uid, k),
+            Call::Restore => {
+                m.restore(uid, k)?;
+                Ok(json!({"restored":true}))
+            }
             Call::Reconcile => {
                 m.reconcile(uid, k)?;
                 Ok(json!({"reconciled":true}))
@@ -315,6 +320,11 @@ pub fn serve(policy_path: &Path, state: &Path) -> Res<()> {
         .map_err(|_| "network_socket_permissions_failed")?;
     let mut manager = Manager::open(state, p)?;
     let mut kernel = LinuxKernel::new()?;
+    // Reapply only recorded missing peers after boot. Keep RPC available for
+    // status/reconcile if an interrupted intent or external edit blocks restore.
+    if let Err(error) = manager.restore(0, &mut kernel) {
+        eprintln!("readb network startup: {error}");
+    }
     for stream in socket.incoming() {
         let mut s = stream.map_err(|_| "network_socket_accept_failed")?;
         let _ = handle(&mut s, &mut manager, &mut kernel);
