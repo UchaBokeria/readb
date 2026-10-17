@@ -18,6 +18,18 @@ const UNIT: &str = "etc/systemd/system/readb-network.service";
 const STATE: &str = "var/lib/readb-network";
 const RECEIPT: &str = "install.json";
 const INTENT: &str = "install-pending.json";
+const POLICY_FILE: &str = "etc/readb/network-policy.json";
+const POLICY_INTENT: &str = "policy-pending.json";
+const POLICY_RECEIPT: &str = "policy-install.json";
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PolicyIntent {
+    schema: u8,
+    policy: Policy,
+    before: Option<Vec<u8>>,
+    before_receipt: Option<Vec<u8>>,
+}
+
 fn hash(b: &[u8]) -> String {
     Sha256::digest(b)
         .iter()
@@ -333,6 +345,15 @@ fn read_at(dir: &File, name: &std::ffi::OsStr) -> Res<Option<Vec<u8>>> {
     Ok(Some(b))
 }
 fn write_at(dir: &File, target: &std::ffi::OsStr, bytes: &[u8], mode: u32) -> Res<()> {
+    write_at_mode(dir, target, bytes, mode, false)
+}
+fn write_at_mode(
+    dir: &File,
+    target: &std::ffi::OsStr,
+    bytes: &[u8],
+    mode: u32,
+    no_replace: bool,
+) -> Res<()> {
     let target = c(target)?;
     let name = std::ffi::CString::new(format!("install-{}.tmp", crate::policy::random())).unwrap();
     let fd = unsafe {
@@ -354,11 +375,16 @@ fn write_at(dir: &File, target: &std::ffi::OsStr, bytes: &[u8], mode: u32) -> Re
             .and_then(|_| f.sync_all())
             .map_err(|_| "network_install_file_sync_failed")?;
         if unsafe {
-            libc::renameat(
+            libc::renameat2(
                 dir.as_raw_fd(),
                 name.as_ptr(),
                 dir.as_raw_fd(),
                 target.as_ptr(),
+                if no_replace {
+                    libc::RENAME_NOREPLACE
+                } else {
+                    0
+                },
             )
         } != 0
         {
@@ -389,6 +415,7 @@ pub struct Installer {
     root: Root,
     state: File,
     pending: Option<Intent>,
+    pending_policy: Option<PolicyIntent>,
     poisoned: bool,
 }
 impl Installer {
@@ -427,10 +454,31 @@ impl Installer {
                 return Err("network_install_unmanaged_before_unit".into());
             }
         }
+        let pending_policy = read_at(&state, POLICY_INTENT.as_ref())?
+            .map(|b| {
+                serde_json::from_slice::<PolicyIntent>(&b)
+                    .map_err(|_| "network_policy_intent_invalid")
+            })
+            .transpose()?;
+        if let Some(p) = &pending_policy {
+            p.policy.validate()?;
+            let canonical =
+                serde_json::to_vec(&p.policy).map_err(|_| "network_policy_encoding_failed")?;
+            let receipt = serde_json::to_vec(&hash(&canonical))
+                .map_err(|_| "network_policy_encoding_failed")?;
+            if p.schema != 1
+                || p.policy.uid == 0
+                || p.before.as_ref().is_some_and(|b| b != &canonical)
+                || p.before_receipt.as_ref().is_some_and(|b| b != &receipt)
+            {
+                return Err("network_policy_intent_invalid".into());
+            }
+        }
         Ok(Self {
             root,
             state,
             pending,
+            pending_policy,
             poisoned: false,
         })
     }
@@ -451,7 +499,123 @@ impl Installer {
         write_at(&self.state, name.as_ref(), &b, 0o600)
     }
     pub fn fenced(&self) -> bool {
-        self.poisoned || self.pending.is_some()
+        self.poisoned || self.pending.is_some() || self.pending_policy.is_some()
+    }
+    pub fn prepare_policy(&mut self, policy: &Policy) -> Res<()> {
+        if self.fenced() {
+            return Err("network_policy_cleanup_unknown: recover before installing".into());
+        }
+        policy.validate()?;
+        if policy.uid == 0 {
+            return Err("network_policy_nonroot_coordinator_required".into());
+        }
+        let canonical = serde_json::to_vec(policy).map_err(|_| "network_policy_encoding_failed")?;
+        let before = self.root.read(Path::new(POLICY_FILE))?;
+        if before.as_ref().is_some_and(|b| b != &canonical)
+            || (before.is_some() && self.root.mode(Path::new(POLICY_FILE))? != Some(0o600))
+        {
+            return Err("network_policy_existing_config_preserved".into());
+        }
+        let before_receipt = read_at(&self.state, POLICY_RECEIPT.as_ref())?;
+        if let Some(receipt) = &before_receipt {
+            // The receipt is a canonical policy SHA, never an instruction to adopt
+            // another file. An absent previously owned file also needs review.
+            let expected = serde_json::to_vec(&hash(&canonical))
+                .map_err(|_| "network_policy_encoding_failed")?;
+            if receipt != &expected || before.is_none() {
+                return Err("network_policy_owned_file_changed".into());
+            }
+        }
+        self.root.directory(Path::new("etc/readb"), true)?;
+        let intent = PolicyIntent {
+            schema: 1,
+            policy: policy.clone(),
+            before,
+            before_receipt,
+        };
+        self.poisoned = true;
+        self.record(POLICY_INTENT, &intent)?;
+        self.pending_policy = Some(intent);
+        self.poisoned = false;
+        Ok(())
+    }
+    pub fn install_policy(&mut self, policy: &Policy) -> Res<()> {
+        self.prepare_policy(policy)?;
+        let intent = self.pending_policy.as_ref().unwrap().clone();
+        let canonical =
+            serde_json::to_vec(&intent.policy).map_err(|_| "network_policy_encoding_failed")?;
+        if intent.before.is_none() {
+            let dir = self
+                .root
+                .directory(Path::new("etc/readb"), false)?
+                .ok_or("network_policy_parent_missing")?;
+            write_at_mode(
+                &dir,
+                "network-policy.json".as_ref(),
+                &canonical,
+                0o600,
+                true,
+            )?;
+        }
+        self.finish_policy(&intent, true)
+    }
+    fn finish_policy(&mut self, intent: &PolicyIntent, installed: bool) -> Res<()> {
+        let canonical =
+            serde_json::to_vec(&intent.policy).map_err(|_| "network_policy_encoding_failed")?;
+        let actual = self.root.read(Path::new(POLICY_FILE))?;
+        let expected =
+            serde_json::to_vec(&hash(&canonical)).map_err(|_| "network_policy_encoding_failed")?;
+        let receipt = read_at(&self.state, POLICY_RECEIPT.as_ref())?;
+        if receipt != intent.before_receipt && (!installed || receipt.as_ref() != Some(&expected)) {
+            return Err("network_policy_external_receipt_preserved".into());
+        }
+
+        if installed {
+            if actual.as_ref() != Some(&canonical)
+                || self.root.mode(Path::new(POLICY_FILE))? != Some(0o600)
+            {
+                return Err("network_policy_verification_failed".into());
+            }
+            self.root.sync(Path::new(POLICY_FILE))?;
+            self.record(POLICY_RECEIPT, &hash(&canonical))?;
+        } else {
+            if actual.is_some() || intent.before.is_some() {
+                return Err("network_policy_rollback_mismatch".into());
+            }
+            let dir = self
+                .root
+                .directory(Path::new("etc/readb"), false)?
+                .ok_or("network_policy_parent_missing")?;
+            dir.sync_all()
+                .map_err(|_| "network_policy_directory_sync_failed")?;
+        }
+        if let Err(e) = remove_at(&self.state, POLICY_INTENT.as_ref()) {
+            let _ = self.record(POLICY_INTENT, intent);
+            self.poisoned = true;
+            return Err(e);
+        }
+        self.pending_policy = None;
+        Ok(())
+    }
+    pub fn recover_policy(&mut self) -> Res<()> {
+        if self.poisoned {
+            return Err("network_policy_restart_required_after_storage_error".into());
+        }
+        let intent = self
+            .pending_policy
+            .clone()
+            .ok_or("network_policy_no_pending_operation")?;
+        if self.pending.is_some() {
+            return Err("network_policy_competing_install_intent".into());
+        }
+        let canonical =
+            serde_json::to_vec(&intent.policy).map_err(|_| "network_policy_encoding_failed")?;
+        let actual = self.root.read(Path::new(POLICY_FILE))?;
+        match actual {
+            Some(ref bytes) if bytes == &canonical => self.finish_policy(&intent, true),
+            None if intent.before.is_none() => self.finish_policy(&intent, false),
+            _ => Err("network_policy_external_edit_preserved".into()),
+        }
     }
     fn verify_release(&self, r: &Receipt) -> Res<()> {
         let path = format!(
@@ -673,24 +837,27 @@ pub fn recover_on_server() -> Res<serde_json::Value> {
 }
 
 pub(crate) fn ensure_complete_fd(dir: &File) -> Res<()> {
-    let mut meta = std::mem::MaybeUninit::<libc::stat>::uninit();
-    let rc = unsafe {
-        libc::fstatat(
-            dir.as_raw_fd(),
-            c"install-pending.json".as_ptr(),
-            meta.as_mut_ptr(),
-            libc::AT_SYMLINK_NOFOLLOW,
-        )
-    };
-    if rc < 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ENOENT) {
-        Ok(())
-    } else {
-        Err(
-            "network_install_cleanup_unknown: recover the installation before starting helper"
-                .into(),
-        )
+    for marker in [INTENT, POLICY_INTENT] {
+        let name = std::ffi::CString::new(marker).unwrap();
+        let mut meta = std::mem::MaybeUninit::<libc::stat>::uninit();
+        let rc = unsafe {
+            libc::fstatat(
+                dir.as_raw_fd(),
+                name.as_ptr(),
+                meta.as_mut_ptr(),
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        };
+        if rc >= 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::ENOENT) {
+            return Err(
+                "network_install_cleanup_unknown: recover the installation before starting helper"
+                    .into(),
+            );
+        }
     }
+    Ok(())
 }
+
 #[cfg(test)]
 mod durability_tests {
     use super::*;

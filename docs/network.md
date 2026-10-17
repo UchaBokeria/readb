@@ -94,3 +94,10 @@ unit installation/activation, host reboot, fresh setup or device cutover proved.
 Runtime interface restart remains a setup gate: startup restore is tested, but
 a WireGuard restart while the helper stays running needs explicit recovery wiring
 and acceptance. An active interface alone does not prove boot persistence.
+
+Root policy creation is now a separate journaled library phase. It creates only
+the canonical0600 policy, with atomic no-replace publication. A pending policy
+blocks both helper startup and binary installation under their shared lock.
+Recovery accepts only the recorded absent/exact file and before/after receipt;
+external edits and root coordinator accounts are refused. It never starts a unit
+or changes a peer. Setup CLI composition remains pending.

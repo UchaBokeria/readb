@@ -198,3 +198,107 @@ fn changed_previous_release_denies_upgrade_and_rollback() {
         fs::remove_dir_all(root).unwrap();
     }
 }
+
+#[test]
+fn policy_install_is_private_no_replace_and_recoverable() {
+    let root = image();
+    let p = policy();
+    let mut i = Installer::open(&root).unwrap();
+    i.install_policy(&p).unwrap();
+    let file = root.join("etc/readb/network-policy.json");
+    assert_eq!(fs::read(&file).unwrap(), serde_json::to_vec(&p).unwrap());
+    assert_eq!(
+        fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    i.install_policy(&p).unwrap();
+    let mut changed = policy();
+    changed.last = "10.88.0.21".parse().unwrap();
+    assert!(i.install_policy(&changed).is_err());
+    assert_eq!(fs::read(&file).unwrap(), serde_json::to_vec(&p).unwrap());
+    drop(i);
+    fs::remove_dir_all(root).unwrap();
+}
+#[test]
+fn pending_policy_fences_helper_and_file_install_and_preserves_external_edits() {
+    let root = image();
+    let p = policy();
+    let state = root.join("var/lib/readb-network");
+    let mut i = Installer::open(&root).unwrap();
+    i.prepare_policy(&p).unwrap();
+    assert!(i.install(Plan::new(&p, b"b").unwrap(), b"b").is_err());
+    drop(i);
+    assert!(readb::network::Manager::open(&state, p.clone()).is_err());
+    let file = root.join("etc/readb/network-policy.json");
+    fs::write(&file, b"external config").unwrap();
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+    let mut i = Installer::open(&root).unwrap();
+    assert!(i.recover_policy().is_err());
+    assert!(i.fenced());
+    assert_eq!(fs::read(&file).unwrap(), b"external config");
+    drop(i);
+    fs::remove_dir_all(root).unwrap();
+}
+#[test]
+fn interrupted_policy_accepts_only_absent_or_exact_durable_file() {
+    for created in [false, true] {
+        let root = image();
+        let p = policy();
+        let mut i = Installer::open(&root).unwrap();
+        i.prepare_policy(&p).unwrap();
+        drop(i);
+        if created {
+            let file = root.join("etc/readb/network-policy.json");
+            fs::write(&file, serde_json::to_vec(&p).unwrap()).unwrap();
+            fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let mut i = Installer::open(&root).unwrap();
+        i.recover_policy().unwrap();
+        assert!(!i.fenced());
+        i.install_policy(&p).unwrap();
+        drop(i);
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+#[test]
+fn unmanaged_existing_policy_and_symlink_are_preserved() {
+    for link in [false, true] {
+        let root = image();
+        let mut i = Installer::open(&root).unwrap();
+        fs::create_dir_all(root.join("etc/readb")).unwrap();
+        let file = root.join("etc/readb/network-policy.json");
+        if link {
+            symlink(root.join("missing"), &file).unwrap();
+        } else {
+            fs::write(&file, b"unknown").unwrap();
+            fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        assert!(i.install_policy(&policy()).is_err());
+        assert!(!i.fenced());
+        drop(i);
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn policy_recovery_never_overwrites_external_receipt_or_accepts_root_coordinator() {
+    let root = image();
+    let mut i = Installer::open(&root).unwrap();
+    let mut p = policy();
+    p.uid = 0;
+    assert!(i.install_policy(&p).is_err());
+    i.prepare_policy(&policy()).unwrap();
+    drop(i);
+    let file = root.join("etc/readb/network-policy.json");
+    fs::write(&file, serde_json::to_vec(&policy()).unwrap()).unwrap();
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+    let receipt = root.join("var/lib/readb-network/policy-install.json");
+    fs::write(&receipt, b"external receipt").unwrap();
+    fs::set_permissions(&receipt, fs::Permissions::from_mode(0o600)).unwrap();
+    let mut i = Installer::open(&root).unwrap();
+    assert!(i.recover_policy().is_err());
+    assert!(i.fenced());
+    assert_eq!(fs::read(receipt).unwrap(), b"external receipt");
+    drop(i);
+    fs::remove_dir_all(root).unwrap();
+}

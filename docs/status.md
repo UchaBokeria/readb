@@ -93,3 +93,9 @@ probes reject user-writable executables and test home access after dropping UID/
 important issues. A root-owned temporary static candidate on Blackwall passed
 existing-mobile plan checks using a clearly synthetic endpoint; no files installed,
 service activated or peers changed. Production setup apply remains pending.
+
+Root policy library phase adds durable no-replace creation, receipt and explicit
+recovery with shared startup/install fencing.160 workspace tests, Clippy/fmt pass;
+focused review found no important issue.14 installer/policy image tests also pass
+as root on Blackwall with temporary root binary cleaned. No live root policy or
+service installed. Setup composition and companion migration remain unfinished.
