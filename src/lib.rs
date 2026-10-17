@@ -13,6 +13,7 @@ pub mod registry;
 
 pub mod daemon;
 
+pub mod catalog;
 pub mod client;
 
 pub mod actions;

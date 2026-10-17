@@ -8,13 +8,15 @@ fn manages_only_own_foreground_server_and_refuses_existing_listener() {
     let fake = dir.join("adb");
     fs::write(&fake,"#!/usr/bin/env python3\nimport sys,socket,time,os\nif 'server' in sys.argv and 'nodaemon' in sys.argv:\n p=int(sys.argv[sys.argv.index('-L')+1].split(':')[1]);s=socket.socket(fileno=p);os.write(int(sys.argv[sys.argv.index('--reply-fd')+1]),bytes([79,75,10]));time.sleep(60)\nelif 'devices' in sys.argv: print('List of devices attached')\nelse: sys.exit(8)\n").unwrap();
     fs::set_permissions(&fake, fs::Permissions::from_mode(0o700)).unwrap();
+    let occupied = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    assert!(ManagedServer::start(&fake, &dir, occupied.local_addr().unwrap().port()).is_err());
+    // Allocate only after the occupied fixture: otherwise the OS may reuse the
+    // just-released ephemeral port for that fixture itself.
     let port = TcpListener::bind(("127.0.0.1", 0))
         .unwrap()
         .local_addr()
         .unwrap()
         .port();
-    let occupied = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-    assert!(ManagedServer::start(&fake, &dir, occupied.local_addr().unwrap().port()).is_err());
     let mut server = ManagedServer::start(&fake, &dir, port).unwrap();
     assert!(server.running().unwrap());
     assert!(TcpListener::bind(("127.0.0.1", port)).is_err());

@@ -21,6 +21,7 @@ pub struct Registry {
     pub listener_errors: Mutex<BTreeMap<String, String>>,
     catalog: Mutex<Catalog>,
     managed_servers: std::sync::atomic::AtomicBool,
+    catalog_store: crate::catalog::Store,
 }
 struct Catalog {
     config: ServerConfig,
@@ -78,6 +79,7 @@ impl Registry {
             devices.insert(d.id.clone(), Arc::new(b));
         }
         Ok(Self {
+            catalog_store: crate::catalog::Store::for_loaded_config(&root, &config_path, &config)?,
             root,
             config_path,
             revision: std::sync::atomic::AtomicU64::new(1),
@@ -145,7 +147,7 @@ impl Registry {
     }
     pub fn status(&self) -> Value {
         let c = self.catalog.lock().unwrap();
-        json!({"schema":1,"pid":std::process::id(),"listener_errors":*self.listener_errors.lock().unwrap(),"devices":c.config.devices.iter().map(|d|{let mut v=c.devices[&d.id].status();v["id"]=json!(d.id);v["name"]=json!(d.name);v["kind"]=json!(d.kind);v}).collect::<Vec<_>>()})
+        json!({"schema":1,"pid":std::process::id(),"catalog_cleanup_unknown":self.catalog_store.fenced(),"listener_errors":*self.listener_errors.lock().unwrap(),"devices":c.config.devices.iter().map(|d|{let mut v=c.devices[&d.id].status();v["id"]=json!(d.id);v["name"]=json!(d.name);v["kind"]=json!(d.kind);v}).collect::<Vec<_>>()})
     }
     pub fn add(&self, d: Device, listener: Option<Listener>) -> Res<Value> {
         let mut c = self.catalog.lock().unwrap();
@@ -158,42 +160,41 @@ impl Registry {
             next.listeners.push(l);
         }
         next.validate()?;
+        self.catalog_store.preflight()?;
         let dir = self.root.join("devices").join(&d.id);
         if dir.exists() {
             return Err(
                 "device_id_has_retained_state: choose another id; keys were preserved".into(),
             );
         }
-        private_dir(&dir)?;
-        let b = Arc::new(Backend::new(Config {
-            dir,
-            adb: next.adb.clone(),
-            token: d.token.clone(),
-            identity: d.identity.clone(),
-            recipient: d.recipient.clone().unwrap_or_default(),
-            peer: d.peer,
-            adb_port: d.adb_port,
-            kind: d.kind,
-            keepalive: d.keepalive.clone(),
-        })?);
-        let n = if b.config.recipient.is_empty() {
-            None
-        } else {
-            Some(Arc::new(crate::notifier::Notifier::named(
-                &b.config, &d.name,
-            )?))
-        };
-        if self
-            .managed_servers
-            .load(std::sync::atomic::Ordering::SeqCst)
-        {
-            b.enable_owned_server();
-        }
-        if let Err(e) = crate::backend::atomic(&self.config_path, &next) {
-            // Only an uncommitted new empty directory is removed. Never touch retained state.
-            let _ = fs::remove_dir(&b.config.dir);
-            return Err(e);
-        }
+        let (b, n) = self.catalog_store.transaction(&next, Some(&d.id), || {
+            private_dir(&dir)?;
+            let b = Arc::new(Backend::new(Config {
+                dir,
+                adb: next.adb.clone(),
+                token: d.token.clone(),
+                identity: d.identity.clone(),
+                recipient: d.recipient.clone().unwrap_or_default(),
+                peer: d.peer,
+                adb_port: d.adb_port,
+                kind: d.kind,
+                keepalive: d.keepalive.clone(),
+            })?);
+            let n = if b.config.recipient.is_empty() {
+                None
+            } else {
+                Some(Arc::new(crate::notifier::Notifier::named(
+                    &b.config, &d.name,
+                )?))
+            };
+            if self
+                .managed_servers
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                b.enable_owned_server();
+            }
+            Ok((b, n))
+        })?;
         c.config = next;
         c.devices.insert(d.id.clone(), b);
         if let Some(n) = n {
@@ -205,6 +206,7 @@ impl Registry {
     }
     pub fn trust(&self, id: &str, ticket: &str, pin: &str) -> Res<Value> {
         let mut c = self.catalog.lock().unwrap();
+        self.catalog_store.preflight()?;
         if self.closing.load(std::sync::atomic::Ordering::SeqCst) {
             return Err("coordinator_shutdown".into());
         }
@@ -220,9 +222,7 @@ impl Registry {
         }
         d.identity = pin.into();
         next.validate()?;
-        b.trust_identity(ticket, pin, || {
-            crate::backend::atomic(&self.config_path, &next)
-        })?;
+        b.trust_identity(ticket, pin, || self.catalog_store.publish(&next, None))?;
         c.config = next;
         Ok(
             json!({"device":id,"identity_configured":true,"note":"Normal commands require the next fresh pinned report. Reconnect if paused."}),
@@ -230,6 +230,7 @@ impl Registry {
     }
     pub fn remove(&self, id: &str, ticket: &str) -> Res<Value> {
         let mut c = self.catalog.lock().unwrap();
+        self.catalog_store.preflight()?;
         if self.closing.load(std::sync::atomic::Ordering::SeqCst) {
             return Err("coordinator_shutdown".into());
         }
@@ -237,13 +238,13 @@ impl Registry {
         let mut next = c.config.clone();
         next.devices.retain(|d| d.id != id);
         next.listeners.retain(|l| l.device != id);
-        b.retire(ticket, || crate::backend::atomic(&self.config_path, &next))?;
-        b.stop_owned_server()?;
+        b.retire(ticket, || self.catalog_store.publish(&next, None))?;
         c.config = next;
         c.devices.remove(id);
         c.notifiers.remove(id);
         self.revision
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        b.stop_owned_server()?;
         Ok(json!({"removed":id,"private_state_preserved":true,"state_path":b.config.dir}))
     }
     pub fn shutdown(&self) -> Res<()> {

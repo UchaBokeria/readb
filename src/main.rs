@@ -248,8 +248,15 @@ enum ServiceCmd {
 #[derive(Subcommand)]
 enum ConfigCmd {
     Show,
-    Validate { file: PathBuf },
+    Validate {
+        file: PathBuf,
+    },
     Migrate,
+    #[command(about = "Recover a pending catalog write offline; stop coordinator first")]
+    Recover {
+        #[arg(long)]
+        file: PathBuf,
+    },
 }
 #[derive(Subcommand)]
 enum DashboardCmd {
@@ -293,6 +300,13 @@ fn run() -> Res<i32> {
         }
     }
     match &c.command {
+        Cmd::Config(ConfigCmd::Recover { file }) => {
+            if !c.local {
+                return Err("catalog_recovery_requires_--local_on_server".into());
+            }
+            output(&readb::catalog::recover(&client::state_dir()?, file)?);
+            return Ok(0);
+        }
         Cmd::Setup(SetupCmd::Plan {
             endpoint,
             interface,

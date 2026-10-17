@@ -33,3 +33,22 @@ pending. Keep old services until replacement acceptance and rollback checks pass
 
 PC clients keep using their SSH context. Never set up direct device transport
 on a client as a fallback. Web stays off by default.
+
+## Interrupted catalog writes
+
+Add, remove and trust changes use a private journal. An uncertain write blocks
+further catalog changes with `catalog_cleanup_unknown`; existing device jobs
+remain available. Stop the daemon before recovery. On the server:
+
+```sh
+readb --local --state-dir /absolute/state config recover --file /absolute/server.json
+```
+
+Use the original config and state paths. Recovery accepts only the recorded
+before/after file hash; it never overwrites another edit. It preserves keys and
+removes only known empty, uncommitted device directories. Start the daemon again
+to load the config that actually reached disk. Other errors keep recovery fenced.
+
+Keep the config private (0600), in an owned directory without other writers. A
+hidden `.readb-state-*.json` marker binds each config to one state directory.
+Leave that marker in place. This recovery does not clear a device cleanup fence.

@@ -10,6 +10,7 @@ fn help_and_completion_do_not_need_server_or_private_config() {
         vec!["service", "--help"],
         vec!["setup", "--help"],
         vec!["setup", "plan", "--help"],
+        vec!["config", "recover", "--help"],
         vec!["completion", "fish"],
     ] {
         let o = Command::new(env!("CARGO_BIN_EXE_readb"))
@@ -35,6 +36,18 @@ fn setup_requires_explicit_server_local_scope() {
     assert!(!o.status.success());
     assert!(
         String::from_utf8_lossy(&o.stderr).contains("setup_requires_explicit_--local_on_server")
+    );
+}
+#[test]
+fn catalog_recovery_requires_explicit_server_local_scope() {
+    let o = Command::new(env!("CARGO_BIN_EXE_readb"))
+        .args(["config", "recover", "--file", "/nonexistent"])
+        .env("HOME", "/nonexistent")
+        .output()
+        .unwrap();
+    assert!(!o.status.success());
+    assert!(
+        String::from_utf8_lossy(&o.stderr).contains("catalog_recovery_requires_--local_on_server")
     );
 }
 #[test]

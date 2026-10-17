@@ -53,3 +53,10 @@ PC/Blackwall viewer reads with one controller. Competing controller got the real
 owner/job conflict; observer-only profile denied a harmless non-profile command.
 All leases released; transient service stopped and its isolated listener closed.
 Legacy5038 stayed healthy. No companion/report/VPN or production service cutover.
+
+Catalog durability/recovery now passes122 workspace tests, Clippy/fmt and focused
+independent review. Intent is durable before staging; config/state binding is
+atomic and unique; ordinary edits check baseline hashes. Uncertain writes fence
+catalog changes. Offline recovery rejects active daemon, external edits and
+unexpected filesystem errors, preserving keys. See setup.md. No live catalog
+mutation or cutover acceptance; fresh setup/apply and helper handover remain.

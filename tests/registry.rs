@@ -39,6 +39,43 @@ fn device_scopes_are_independent_and_public_status_is_redacted() {
     r.device("quest").unwrap().release(&a).unwrap();
 }
 #[test]
+fn missing_config_parent_add_is_retryable_without_retained_directory() {
+    let root = std::env::temp_dir().join(format!("readb-config-retry-{}", readb::policy::random()));
+    let cfg = root.join("missing/server.json");
+    let r = Registry::new_at(config(), root.join("state"), cfg.clone()).unwrap();
+    let d:Device=serde_json::from_value(json!({"id":"new-phone","name":"New phone","kind":"phone","peer":"192.0.2.9","adb_port":5099,"token":"c".repeat(64)})).unwrap();
+    assert!(r.add(d.clone(), None).is_err());
+    assert!(!root.join("state/devices/new-phone").exists());
+    std::fs::create_dir(cfg.parent().unwrap()).unwrap();
+    r.add(d, None).unwrap();
+    assert!(r.device("new-phone").is_ok());
+    std::fs::remove_dir_all(root).unwrap();
+}
+#[test]
+fn external_valid_config_edit_is_never_overwritten_by_add() {
+    let root =
+        std::env::temp_dir().join(format!("readb-registry-drift-{}", readb::policy::random()));
+    let r = Registry::new(config(), root.clone()).unwrap();
+    let d:Device=serde_json::from_value(json!({"id":"first","name":"First","kind":"phone","peer":"192.0.2.9","adb_port":5099,"token":"c".repeat(64)})).unwrap();
+    r.add(d.clone(), None).unwrap();
+    let mut edited = r.config();
+    edited.devices[0].name = "Owner external edit".into();
+    let bytes = serde_json::to_vec(&edited).unwrap();
+    std::fs::write(&r.config_path, &bytes).unwrap();
+    let mut second = d;
+    second.id = "second".into();
+    second.peer = "192.0.2.10".parse().unwrap();
+    second.adb_port = 5100;
+    assert!(
+        r.add(second, None)
+            .unwrap_err()
+            .contains("catalog_external_change")
+    );
+    assert_eq!(std::fs::read(&r.config_path).unwrap(), bytes);
+    assert!(!root.join("devices/second").exists());
+    std::fs::remove_dir_all(root).unwrap();
+}
+#[test]
 fn legacy_formats_are_strict_and_device_bound() {
     assert_eq!(
         parse_report(br#"{"port":40000}"#, ReportFormat::LegacyPixel)
