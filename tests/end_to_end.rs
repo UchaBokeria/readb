@@ -22,7 +22,7 @@ fn real_cli_daemon_protocol_claim_views_binary_and_release() {
     fs::create_dir(&root).unwrap();
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
     let adb = root.join("adb");
-    fs::write(&adb,"#!/bin/sh\ncase \"$*\" in\n*keygen*) printf 'fixture private key' > \"$6\";;\n*pair*) read code; test \"$code\" = \"123456\" || exit 1; echo paired;;\n*disconnect*) echo disconnected;;\n*connect*) echo connected to 192.0.2.8:40000;;\n*devices) printf 'List of devices attached\\n';;\n*ro.serialno*) echo fixture;;\n*) printf '\\000\\377hi';;\nesac\n").unwrap();
+    fs::write(&adb,"#!/bin/sh\ncase \"$*\" in\n*server\\ nodaemon*) exec python3 -c 'import socket,sys,time,os;s=socket.socket(fileno=3);os.write(4,bytes([79,75,10]));time.sleep(120)' \"$2\";;\n*keygen*) printf 'fixture private key' > \"$6\";;\n*pair*) read code; test \"$code\" = \"123456\" || exit 1; echo paired;;\n*disconnect*) echo disconnected;;\n*connect*) echo connected to 192.0.2.8:40000;;\n*devices) printf 'List of devices attached\\n';;\n*ro.serialno*) echo fixture;;\n*) printf '\\000\\377hi';;\nesac\n").unwrap();
     fs::set_permissions(&adb, fs::Permissions::from_mode(0o700)).unwrap();
     let pin = Sha256::digest(b"fixture")
         .iter()
@@ -86,6 +86,51 @@ fn real_cli_daemon_protocol_claim_views_binary_and_release() {
         serde_json::from_slice::<serde_json::Value>(&o.stdout).unwrap()
     };
     let c = claim("control", "controller");
+    // A newly added device with an occupied host port must not stop other jobs.
+    let occupied = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let bad:readb::schema::Device=serde_json::from_value(serde_json::json!({"id":"blocked","name":"Blocked fixture","kind":"phone","peer":"192.0.2.9","adb_port":occupied.local_addr().unwrap().port(),"token":"z".repeat(64),"identity":"b".repeat(64)})).unwrap();
+    registry.add(bad, None).unwrap();
+    let bad_claim = call(&[
+        "--device",
+        "blocked",
+        "job",
+        "claim",
+        "--agent",
+        "test",
+        "--origin",
+        "host",
+        "--session",
+        "e2e",
+        "--job",
+        "blocked startup",
+    ]);
+    assert!(bad_claim.status.success());
+    let bad: serde_json::Value = serde_json::from_slice(&bad_claim.stdout).unwrap();
+    let bad_ticket = bad["ticket_path"].as_str().unwrap();
+    let failed = call(&[
+        "--device", "blocked", "--ticket", bad_ticket, "device", "connect", "--port", "40000",
+    ]);
+    assert!(!failed.status.success());
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("adb_server_port_busy"));
+    assert!(
+        call(&[
+            "--device",
+            "quest",
+            "--ticket",
+            c["ticket_path"].as_str().unwrap(),
+            "job",
+            "heartbeat"
+        ])
+        .status
+        .success()
+    );
+    assert!(
+        call(&[
+            "--device", "blocked", "--ticket", bad_ticket, "device", "rm", "--yes"
+        ])
+        .status
+        .success()
+    );
     {
         use std::io::Write;
         use std::process::Stdio;

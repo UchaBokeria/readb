@@ -37,6 +37,78 @@ fn startup_distrusts_saved_report() {
     assert!(!b.status()["connected"].as_bool().unwrap());
 }
 #[test]
+fn failed_pinned_manual_connect_is_an_error() {
+    let b = setup();
+    let t = b
+        .claim(
+            Owner {
+                agent: "codex".into(),
+                origin: "pc".into(),
+                session: "connect-failure".into(),
+                job: "Failed-connect status".into(),
+                allow_sleep: false,
+            },
+            90,
+        )
+        .unwrap();
+    assert!(b.connect_device(&t, Some(40001)).is_err());
+    assert_eq!(b.status()["connected"], false);
+    b.release(&t).unwrap();
+}
+#[test]
+fn managed_status_requires_a_live_owned_server() {
+    let b = setup();
+    assert!(
+        b.report(Report {
+            port: 40000,
+            battery: 50
+        })
+        .unwrap()
+    );
+    assert_eq!(b.status()["connected"], true);
+    b.enable_owned_server();
+    assert_eq!(b.status()["connected"], false);
+    assert_eq!(b.status()["adb_server_state"], "not_started");
+}
+#[test]
+fn cancelled_pairing_never_starts_a_managed_server() {
+    let b = setup();
+    fs::set_permissions(&b.config.dir, fs::Permissions::from_mode(0o700)).unwrap();
+    b.enable_owned_server();
+    let t = b
+        .claim(
+            Owner {
+                agent: "codex".into(),
+                origin: "pc".into(),
+                session: "cancel-before-spawn".into(),
+                job: "Cancel pairing".into(),
+                allow_sleep: false,
+            },
+            90,
+        )
+        .unwrap();
+    let mut prepared = b.prepare(&t, vec!["pair".into(), "40000".into()]).unwrap();
+    b.cancel(&t).unwrap();
+    assert!(b.spawn(&t, &mut prepared).is_err());
+    assert!(!b.config.dir.join("server.log").exists());
+}
+#[test]
+fn stopped_server_gate_prevents_maintenance_restart() {
+    let b = setup();
+    fs::set_permissions(&b.config.dir, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(
+        b.report(Report {
+            port: 40000,
+            battery: 50
+        })
+        .unwrap()
+    );
+    b.enable_owned_server();
+    b.stop_owned_server().unwrap();
+    assert!(b.keepalive().is_err());
+    assert!(!b.config.dir.join("server.log").exists());
+}
+#[test]
 fn genuine_report_then_claim_and_release() {
     let b = setup();
     assert!(

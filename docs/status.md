@@ -39,3 +39,11 @@ WireGuard type/address/listener; whole-subnet validation prevents public routes.
 Private phase journal rejects concurrent writers, changed plans, unsafe paths and
 completion of an interrupted phase after restart. No apply/root helper yet.
 See setup.md; this is not fresh-server or replacement acceptance.
+
+Actual Blackwall staging exposed missing isolated ADB-server startup. New code
+adds owned lazy foreground server lifecycle, retained socket activation, child ACK,
+per-device failure isolation and permanent shutdown/cancellation gates. Failed
+manual pinned connect now returns an error.108 workspace tests and Clippy/fmt pass;
+independent lifecycle review found no remaining scoped issue. New real two-host
+retry is pending; this is not device acceptance. Catalog persistence retry/ambiguity
+remains an explicit blocker before cutover.

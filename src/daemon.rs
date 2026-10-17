@@ -218,6 +218,7 @@ fn report(mut s: TcpStream, peer: std::net::IpAddr, r: Arc<Registry>, bind: std:
 }
 
 pub fn serve(r: Arc<Registry>, stop: Arc<AtomicBool>) -> Res<()> {
+    r.enable_owned_servers();
     let path = r.root.join("control.sock");
     if path.as_os_str().as_encoded_bytes().len() >= 108 {
         return Err("state_path_too_long_for_unix_socket: choose a shorter --state-dir".into());
@@ -322,11 +323,14 @@ pub fn serve(r: Arc<Registry>, stop: Arc<AtomicBool>) -> Res<()> {
         }
         thread::sleep(Duration::from_millis(20));
     }
-    r.shutdown()?;
+    let shutdown = r.shutdown();
     let until = Instant::now() + Duration::from_secs(35);
     while r.active() && Instant::now() < until {
         thread::sleep(Duration::from_millis(50));
     }
     let _ = fs::remove_file(path);
+    let servers = r.stop_owned_servers();
+    shutdown?;
+    servers?;
     Ok(())
 }

@@ -31,3 +31,17 @@ Android core and server share identifier/report validation. Java service instanc
 keep enrollment locked during startup/teardown; callbacks use reporter and service
 revisions so lost advertisements cannot restore a stale port. Android HTTP runs
 outside the serialized state worker. Details and limits: android.md.
+
+Live daemon backends lazily own foreground ADB processes. Parent retains each
+loopback socket and passes it through acceptfd:3; child initialization must ACK
+on a private fd4 before inventory. USB/emulator discovery is disabled. No
+existing listener is adopted; a dead child keeps its port reserved until explicit
+quiescent reconnect or stop. Shutdown permanently closes lazy startup before
+workers are drained. A failed device startup does not terminate other backends.
+
+Sources: [ADB startup and ACK](https://android.googlesource.com/platform/packages/modules/adb/+/refs/heads/main/client/main.cpp),
+[ADB command parsing](https://android.googlesource.com/platform/packages/modules/adb/+/refs/heads/main/client/commandline.cpp).
+
+Configuration persistence failures during device add remain an acceptance blocker:
+retained empty .android state can prevent retry; ambiguous post-rename/fsync errors
+need a catalog journal. No live cutover until this and setup/device gates pass.

@@ -20,6 +20,7 @@ pub struct Registry {
     pub closing: std::sync::atomic::AtomicBool,
     pub listener_errors: Mutex<BTreeMap<String, String>>,
     catalog: Mutex<Catalog>,
+    managed_servers: std::sync::atomic::AtomicBool,
 }
 struct Catalog {
     config: ServerConfig,
@@ -82,6 +83,7 @@ impl Registry {
             revision: std::sync::atomic::AtomicU64::new(1),
             closing: std::sync::atomic::AtomicBool::new(false),
             listener_errors: Mutex::new(BTreeMap::new()),
+            managed_servers: std::sync::atomic::AtomicBool::new(false),
             web: Mutex::new(Default::default()),
             catalog: Mutex::new(Catalog {
                 config,
@@ -92,6 +94,23 @@ impl Registry {
     }
     pub fn config(&self) -> ServerConfig {
         self.catalog.lock().unwrap().config.clone()
+    }
+    pub fn enable_owned_servers(&self) {
+        let c = self.catalog.lock().unwrap();
+        self.managed_servers
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        for b in c.devices.values() {
+            b.enable_owned_server();
+        }
+    }
+    pub fn stop_owned_servers(&self) -> Res<()> {
+        let mut error = None;
+        for (_, b) in self.all() {
+            if let Err(e) = b.stop_owned_server() {
+                error = Some(e);
+            }
+        }
+        error.map_or(Ok(()), Err)
     }
     pub fn notify(&self, id: &str) {
         let (n, b) = {
@@ -164,6 +183,12 @@ impl Registry {
                 &b.config, &d.name,
             )?))
         };
+        if self
+            .managed_servers
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            b.enable_owned_server();
+        }
         if let Err(e) = crate::backend::atomic(&self.config_path, &next) {
             // Only an uncommitted new empty directory is removed. Never touch retained state.
             let _ = fs::remove_dir(&b.config.dir);
@@ -213,6 +238,7 @@ impl Registry {
         next.devices.retain(|d| d.id != id);
         next.listeners.retain(|l| l.device != id);
         b.retire(ticket, || crate::backend::atomic(&self.config_path, &next))?;
+        b.stop_owned_server()?;
         c.config = next;
         c.devices.remove(id);
         c.notifiers.remove(id);

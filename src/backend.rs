@@ -91,6 +91,9 @@ pub struct Backend {
     pub state: Mutex<State>,
     transport: Mutex<()>,
     identity: Mutex<String>,
+    managed_server: std::sync::atomic::AtomicBool,
+    server_closed: std::sync::atomic::AtomicBool,
+    server: Mutex<Option<crate::adb_server::ManagedServer>>,
 }
 pub struct Prepared {
     pub pairing: bool,
@@ -162,6 +165,9 @@ impl Backend {
                 last_attempt: None,
             }),
             transport: Mutex::new(()),
+            managed_server: std::sync::atomic::AtomicBool::new(false),
+            server_closed: std::sync::atomic::AtomicBool::new(false),
+            server: Mutex::new(None),
         })
     }
     fn lifecycle_admission(s: &mut State, ticket: &str) -> Res<()> {
@@ -271,6 +277,7 @@ impl Backend {
             let _transport = self.transport.lock().unwrap();
             let mut s = self.state.lock().unwrap();
             Self::lifecycle_admission(&mut s, ticket)?;
+            self.ensure_owned_server(true)?;
             port.or_else(|| {
                 ((0.0..=180.).contains(&(now() - s.receipt.received_at))).then_some(s.receipt.port)
             })
@@ -281,13 +288,16 @@ impl Backend {
             return self.probe_identity(ticket, selected);
         }
         let battery = self.state.lock().unwrap().receipt.battery;
-        self.refresh_pinned(
+        let connected = self.refresh_pinned(
             ticket,
             Report {
                 port: selected,
                 battery,
             },
         )?;
+        if !connected {
+            return Err("secure_adb_connect_or_identity_failed: inspect server, VPN, pairing and pinned identity; no device command started".into());
+        }
         Ok(self.status())
     }
     pub fn disconnect_device(&self, ticket: &str) -> Res<()> {
@@ -326,6 +336,8 @@ impl Backend {
         Ok(())
     }
     pub fn begin_shutdown(&self) -> Res<()> {
+        self.server_closed
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         let mut s = self.state.lock().unwrap();
         s.stopping = true;
         for v in s.viewers.values_mut() {
@@ -364,7 +376,27 @@ impl Backend {
         let mut s = self.state.lock().unwrap();
         s.gate.expire(lease_now());
         s.viewers.retain(|_, v| v.active || v.expires > lease_now());
-        let mut value = json!({"identity_configured":!self.identity.lock().unwrap().is_empty(),"paused":s.paused,"stopping":s.stopping,"connected":s.receipt.fresh(now()),"identity_verified":s.receipt.fresh(now()),"report_age_seconds":if s.receipt.received_at>0.{Some(now()-s.receipt.received_at)}else{None},"battery":s.receipt.battery,"adb_server_port":self.config.adb_port,"viewers":s.viewers.values().map(|v|json!({"owner":v.owner,"active":v.active,"remaining_seconds":(v.expires-lease_now()).max(0.)})).collect::<Vec<_>>(),"keepalive_policy":s.keepalive,"job":s.gate.lease,"lease_age_seconds":s.gate.lease.as_ref().map(|l|(lease_now()-l.started).max(0.)),"lease_remaining_seconds":s.gate.lease.as_ref().map(|l|(l.expires-lease_now()).max(0.)),"operation_running":s.gate.active,"cleanup_unknown":s.gate.cleanup_unknown,"generation":s.generation,"last_job":s.gate.last_owner,"cancel_reason":s.gate.cancel_reason});
+        let server_state = if self
+            .managed_server
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            match self.server.try_lock() {
+                Ok(mut slot) => match slot.as_mut() {
+                    None => "not_started",
+                    Some(server) => match server.running() {
+                        Ok(true) => "running",
+                        Ok(false) => "exited",
+                        Err(_) => "unknown",
+                    },
+                },
+                Err(_) => "starting_or_stopping",
+            }
+        } else {
+            "unmanaged_library"
+        };
+        let connected =
+            s.receipt.fresh(now()) && matches!(server_state, "running" | "unmanaged_library");
+        let mut value = json!({"identity_configured":!self.identity.lock().unwrap().is_empty(),"paused":s.paused,"stopping":s.stopping,"connected":connected,"identity_verified":connected,"adb_server_state":server_state,"report_age_seconds":if s.receipt.received_at>0.{Some(now()-s.receipt.received_at)}else{None},"battery":s.receipt.battery,"adb_server_port":self.config.adb_port,"viewers":s.viewers.values().map(|v|json!({"owner":v.owner,"active":v.active,"remaining_seconds":(v.expires-lease_now()).max(0.)})).collect::<Vec<_>>(),"keepalive_policy":s.keepalive,"job":s.gate.lease,"lease_age_seconds":s.gate.lease.as_ref().map(|l|(lease_now()-l.started).max(0.)),"lease_remaining_seconds":s.gate.lease.as_ref().map(|l|(l.expires-lease_now()).max(0.)),"operation_running":s.gate.active,"cleanup_unknown":s.gate.cleanup_unknown,"generation":s.generation,"last_job":s.gate.last_owner,"cancel_reason":s.gate.cancel_reason});
         if let Some((received, report)) = &s.companion {
             value["companion"] = json!({"reported":true,"age_seconds":now()-received,"observed":report.observed,"tls_port_available":report.port.is_some()});
         }
@@ -496,9 +528,58 @@ impl Backend {
         Ok(())
     }
     fn adb(&self, args: &[&str]) -> Res<Captured> {
+        self.ensure_owned_server(false)?;
         let c = self.command(args.iter().map(|s| s.to_string()).collect());
         capture_cmd(c, Duration::from_secs(3), 16384)
             .inspect_err(|e| eprintln!("Device transport probe failed: {e}"))
+    }
+    pub fn enable_owned_server(&self) {
+        self.managed_server
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    fn ensure_owned_server(&self, restart: bool) -> Res<()> {
+        if self.server_closed.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err("owned_adb_server_closed".into());
+        }
+        if !self
+            .managed_server
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Ok(());
+        }
+        let mut slot = self.server.lock().unwrap();
+        if self.server_closed.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err("owned_adb_server_closed".into());
+        }
+        if let Some(server) = slot.as_mut() {
+            if server.running()? {
+                return Ok(());
+            }
+            if !restart {
+                return Err(
+                    "owned_adb_server_exited: use controller device connect after checking jobs"
+                        .into(),
+                );
+            }
+            server.stop()?;
+            *slot = None;
+        }
+        *slot = Some(crate::adb_server::ManagedServer::start(
+            &self.config.adb,
+            &self.config.dir,
+            self.config.adb_port,
+        )?);
+        Ok(())
+    }
+    pub fn stop_owned_server(&self) -> Res<()> {
+        self.server_closed
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let mut slot = self.server.lock().unwrap();
+        if let Some(server) = slot.as_mut() {
+            server.stop()?;
+        }
+        *slot = None;
+        Ok(())
     }
     fn prepare_key_home(config: &Config) -> Res<()> {
         use std::os::unix::fs::MetadataExt;
@@ -583,18 +664,9 @@ impl Backend {
         result
     }
     fn command(&self, args: Vec<String>) -> Command {
-        let mut c = Command::new(&self.config.adb);
-        c.args(["-H", "127.0.0.1", "-P", &self.config.adb_port.to_string()])
-            .args(args)
-            .env("ADB_VENDOR_KEYS", self.config.dir.join(".android/adbkey"))
-            .env("HOME", &self.config.dir)
-            .env("ANDROID_ADB_LOG_PATH", self.config.dir.join("adb.log"))
-            .env_remove("ADB_SERVER_SOCKET")
-            .env_remove("ANDROID_ADB_SERVER_PORT")
-            .env_remove("ANDROID_ADB_SERVER_ADDRESS")
-            .env("ADB_MDNS_AUTO_CONNECT", "")
-            .env_remove("ADB_TRACE")
-            .env_remove("ANDROID_SERIAL");
+        let mut c =
+            crate::adb_server::client(&self.config.adb, &self.config.dir, self.config.adb_port);
+        c.args(args);
         c
     }
     fn pinned(&self, p: u16) -> bool {
@@ -969,6 +1041,7 @@ impl Backend {
         {
             return Err("dispatch_fenced".into());
         }
+        self.ensure_owned_server(false)?;
         atomic(
             &if observer {
                 self.viewer_journal(t)

@@ -1,3 +1,4 @@
+pub mod adb_server;
 pub mod backend;
 pub mod control;
 pub mod http;
