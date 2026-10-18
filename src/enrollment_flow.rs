@@ -191,9 +191,9 @@ fn next(phase: Phase) -> Option<(Effect, Phase)> {
         Phase::Prepared => (Effect::PublishCatalog, Phase::CatalogAdded),
         Phase::CatalogAdded => (Effect::ClaimController, Phase::ControllerHeld),
         Phase::ControllerHeld => (Effect::ApplyPeer, Phase::PeerApplied),
-        Phase::PeerApplied => (Effect::ApplyReportRule, Phase::ReportReady),
-        Phase::ReportReady => (Effect::OwnListener, Phase::ListenerReady),
-        Phase::ListenerReady => (Effect::BindRecipient, Phase::RecipientBound),
+        Phase::PeerApplied => (Effect::OwnListener, Phase::ListenerReady),
+        Phase::ListenerReady => (Effect::ApplyReportRule, Phase::ReportReady),
+        Phase::ReportReady => (Effect::BindRecipient, Phase::RecipientBound),
         Phase::RecipientBound => (Effect::StoreEnvelope, Phase::EnvelopeCommitted),
         Phase::EnvelopeCommitted => (Effect::StoreAndroid, Phase::AndroidStored),
         Phase::AndroidStored => (Effect::Finalize, Phase::Complete),
@@ -471,6 +471,7 @@ mod tests {
         let hash = request_fingerprint(&req).unwrap();
         let mut catalog = plan.config_fingerprint.clone();
         let mut count = 0;
+        let mut effects = Vec::new();
         while state.phase() != Phase::Complete {
             let successor = (state.phase() == Phase::Prepared).then(|| "c".repeat(64));
             let Decision::PersistIntent(effect) = state
@@ -497,6 +498,7 @@ mod tests {
                     &catalog,
                 )
                 .unwrap();
+            effects.push(effect);
             count += 1;
             assert!(count <= 10);
             assert!(
@@ -512,6 +514,17 @@ mod tests {
             );
         }
         assert_eq!(count, 10);
+        assert!(
+            effects
+                .iter()
+                .position(|e| *e == Effect::OwnListener)
+                .unwrap()
+                < effects
+                    .iter()
+                    .position(|e| *e == Effect::ApplyReportRule)
+                    .unwrap(),
+            "exact report rule cannot precede owned listener proof"
+        );
         assert_eq!(
             state.begin(&owner(), &hash, &p, None).unwrap(),
             Decision::Complete

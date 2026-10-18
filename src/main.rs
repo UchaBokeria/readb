@@ -362,6 +362,25 @@ enum ContextCmd {
 }
 #[derive(Subcommand)]
 enum DeviceCmd {
+    #[command(about = "Issue a one-use companion setup code after server readiness checks")]
+    SetupCode {
+        #[arg(long)]
+        name: String,
+        #[arg(long, value_enum)]
+        kind: EnrollmentKind,
+        #[arg(long)]
+        endpoint: String,
+        #[arg(long,value_parser=clap::value_parser!(u16).range(1024..))]
+        report_port: Option<u16>,
+        #[arg(long)]
+        agent: String,
+        #[arg(long)]
+        origin: String,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        job: String,
+    },
     #[command(about = "Inspect a new device plan; advisory only, no setup changes")]
     Enroll {
         #[arg(long)]
@@ -534,6 +553,36 @@ fn output(v: &Value) {
 }
 fn run() -> Res<i32> {
     let c = Cli::parse();
+    if let Cmd::Device(DeviceCmd::SetupCode {
+        name,
+        kind,
+        endpoint,
+        report_port,
+        agent,
+        origin,
+        session,
+        job,
+    }) = &c.command
+    {
+        if c.ticket.is_some() {
+            return Err("onboarding_setup_code_ticket_forbidden".into());
+        }
+        if [agent, origin, session, job]
+            .iter()
+            .any(|v| v.is_empty() || v.len() > 160 || v.chars().any(char::is_control))
+        {
+            return Err("onboarding_actual_owner_required".into());
+        }
+        readb::enrollment_profile::Request {
+            id: c.device.clone().unwrap_or("new-device".into()),
+            name: name.clone(),
+            kind: kind.kind(),
+            endpoint: endpoint.clone(),
+            report_port: report_port.unwrap_or(19193),
+        }
+        .validate()?;
+    }
+
     // Refuse apply/authority before reading a context or private ticket.
     let enrollment_preview = match &c.command {
         Cmd::Device(DeviceCmd::Enroll {
@@ -1026,6 +1075,26 @@ fn run() -> Res<i32> {
             }
             req.device = id.clone();
             req.action = "network-rm".into();
+        }
+        Cmd::Device(DeviceCmd::SetupCode {
+            name,
+            kind,
+            endpoint,
+            report_port,
+            agent,
+            origin,
+            session,
+            job,
+        }) => {
+            req.action = "device-setup-code".into();
+            req.owner = Some(Owner {
+                agent: agent.clone(),
+                origin: origin.clone(),
+                session: session.clone(),
+                job: job.clone(),
+                allow_sleep: false,
+            });
+            req.args=vec![serde_json::to_string(&json!({"id":c.device,"name":name,"kind":kind.kind(),"endpoint":endpoint,"report_port":report_port,"client_session":session})).map_err(|_|"onboarding_encoding_failed")?];
         }
         Cmd::Device(DeviceCmd::Enroll { .. }) => {
             req.action = "device-enroll-preview".into();

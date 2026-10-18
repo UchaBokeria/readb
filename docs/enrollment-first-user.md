@@ -101,7 +101,7 @@ Each successful bound response includes all of:
 - `final_b64` appears only after durable server finalization and is replayed
   exactly; `code=setup_complete`, `phase=complete`, `retry_after_ms=0`.
 - Phase names: `bound`, `prepared`, `catalog_added`, `controller_held`,
-  `peer_applied`, `report_ready`, `listener_ready`, `recipient_bound`,
+  `peer_applied`, `listener_ready`, `report_ready`, `recipient_bound`,
   `envelope_committed`, `android_stored`, `complete`. Blocking preserves the last
   committed phase. `code=setup_blocked` adds a secret-free `blocker` and brief
   actionable message, never falsely claims completion.
@@ -136,3 +136,25 @@ all-target Clippy, formatting and diff checks passed. A real exhausted-budget
 first-bind bypass failed before its fix. HTTP routes/effect orchestration and
 actual broker/device acceptance are still separate pending work. This does not
 make setup usable yet or permit a live cutover.
+
+
+## HTTP/CLI wiring checkpoint — 2026-10-19
+
+Server routes now enforce the frozen JSON schemas, canonical bounded Base64,
+actual socket-peer rate identity, native-only public requests, and existing admin
+Host/Origin/Bearer authorization. The real loopback router test confirms public
+session auth does not grant admin access. Admin source CLI is
+`readb [--device ID] device setup-code --name NAME --kind phone|quest|android
+--endpoint VPN_HOST:PORT --agent AGENT --origin HOST --session SESSION --job JOB`.
+`--report-port` is optional. No existing-device ticket is read or accepted.
+
+Code issuance still returns exact `report_firewall_setup_required` and creates
+no invite. Real installed capability/auto-port selection/effect orchestration
+are not wired yet. A bound session is retained with a stable derived Context;
+no envelope or ACK/final readiness is claimed. Source has no live cutover.
+The phase model now owns the listener before applying its exact firewall rule,
+matching the broker's actual descriptor-proof requirement.
+
+Validation: 12 HTTP/CLI/preview checks and6 typed-flow checks pass, including a
+real temporary loopback HTTP server. All-target Clippy with denied warnings,
+formatting and diff checks pass. No production server/device was changed.

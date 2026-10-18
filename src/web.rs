@@ -506,6 +506,17 @@ fn handle(
             json_reply(&mut s, 403, &json!({"error":"invalid_dashboard_host"}));
             return Ok(());
         }
+        if req.path.starts_with("/onboard/") {
+            if stop.load(Ordering::SeqCst) {
+                return Err("dashboard_disabled".into());
+            }
+            let peer = s
+                .peer_addr()
+                .map_err(|_| "onboarding_peer_unavailable")?
+                .ip()
+                .to_string();
+            return crate::onboarding::public_request(&r, &req, &peer).write(&mut s);
+        }
         if req.method == "GET" {
             let asset = match req.path.as_str() {
                 "/" => Some((
@@ -538,6 +549,9 @@ fn handle(
                 json_reply(&mut s, 200, &json!({"actions":actions::catalog()}))
             }
             ("GET", "/api/history") => json_reply(&mut s, 200, &history(&r)?),
+            ("POST", "/api/onboard/invite") => {
+                crate::onboarding::admin_issue(&r, &req.body).write(&mut s)?;
+            }
             ("POST", "/api/pair") => {
                 let p: PairRequest =
                     serde_json::from_slice(&req.body).map_err(|_| "invalid_pair_request")?;

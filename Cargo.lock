@@ -624,6 +624,7 @@ name = "readb"
 version = "0.2.0"
 dependencies = [
  "aes-gcm",
+ "base64ct",
  "clap",
  "clap_complete",
  "hmac",

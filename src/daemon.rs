@@ -145,6 +145,14 @@ pub fn control_client(mut s: UnixStream, r: Arc<Registry>) {
                 reply(&mut s, &json!({"events":events}), 0)
             }
         }
+        Ok(req) if req.action == "device-setup-code" => {
+            let response = crate::onboarding::cli_issue(&r, &req);
+            reply(
+                &mut s,
+                &response.value,
+                if response.status == 200 { 0 } else { 78 },
+            );
+        }
         Ok(req) if req.action == "device-enroll-preview" => {
             let result = crate::enrollment_preview::handle(
                 &r,
