@@ -20,8 +20,8 @@
         <div class="link-surface">
           <div class="link-mark" aria-hidden="true"><svg viewBox="0 0 64 48"><rect x="1" y="5" width="20" height="38" rx="5"/><path d="M8 36h6M29 24h12M36 19l5 5-5 5"/><rect x="49" y="10" width="14" height="28" rx="3"/><path d="M53 17h6M53 23h6M53 29h6"/></svg></div>
           <h2 id="connection-title">Connect this device</h2>
-          <p id="connection-copy">Import your setup to create a private link to your server.</p>
-          <button id="hero-primary" class="primary" data-action="import">Import setup</button>
+          <p id="connection-copy">Connect to your readb server with its address and a setup code.</p>
+          <button id="hero-primary" class="primary">Connect to server</button>
           <div id="link-actions" class="link-actions" hidden><button id="start" class="primary" data-action="start">Start private link</button><button id="stop" class="secondary" data-action="stop">Stop</button></div>
         </div>
         <div class="status-list" aria-label="Connection status">
@@ -35,7 +35,16 @@
       <section id="page-setup" class="page" aria-labelledby="title-setup" hidden>
         <h1 id="title-setup">Setup</h1><p class="page-description">A few steps now. Port changes are reported automatically later.</p>
         <ol class="setup-list">
-          <li><div class="step-content"><h2>Import your setup</h2><p id="enrolled">Profile missing</p><p class="step-help">Use the private JSON file from your readb server. It stays encrypted on this device.</p><button data-action="import" class="secondary">Import setup</button></div></li>
+          <li><div class="step-content"><h2>Connect to your server</h2><p id="enrolled">Not connected yet</p><p class="step-help">In your server dashboard, choose Add device. Enter its HTTPS address and one-use setup code here. No file is needed.</p>
+          <form id="connect-form" class="connect-form">
+            <label for="setup-server">Server address</label><input id="setup-server" name="server" type="url" inputmode="url" autocomplete="url" autocapitalize="none" spellcheck="false" placeholder="https://readb.example.com" maxlength="2048" required>
+            <label for="setup-code">Setup code</label><input id="setup-code" name="code" type="text" inputmode="text" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="abcd-1234-ef56-7890" maxlength="32" required aria-describedby="code-help"><small id="code-help">The code expires after 10 minutes. Your saved setup stays private.</small>
+            <button id="setup-connect" class="primary" type="submit">Connect device</button>
+          </form>
+          <p id="setup-progress" role="status" aria-live="polite" hidden></p>
+          <button id="setup-resume" data-action="setup_resume" class="secondary" hidden>Resume setup</button><button id="setup-cancel" data-action="setup_cancel" class="secondary" hidden>Cancel</button>
+          <details class="inline-details"><summary>Advanced: import an existing setup</summary><p>Only for an existing private server profile. New devices should use the code above.</p><button data-action="import" class="secondary">Import setup file</button></details>
+          </div></li>
           <li><div class="step-content"><h2>Allow notifications</h2><p id="notifications">Checking…</p><button id="notification-action" data-action="notifications_settings" class="secondary">Notification settings</button></div></li>
           <li><div class="step-content"><h2>Enable wireless debugging</h2><p id="debug-state">Open settings to check.</p><p class="step-help">Turn on Wireless debugging. Keep its pairing-code screen open when you pair on your server.</p><button data-action="debug_settings" class="secondary">Open wireless debugging</button></div></li>
           <li><div class="step-content"><h2>Start the private link</h2><p>WireGuard is built into readb. Approve <strong>readb</strong> below. No other VPN app is needed.</p><p class="vpn-warning">Approval may replace your current VPN. Starting the tunnel is a separate step.</p><button id="setup-vpn-approval" data-action="approve_vpn" class="secondary">Allow readb VPN</button><p id="vpn-approval-state" class="step-help">Approval not checked yet.</p><button id="setup-start" data-action="start" class="secondary">Start private link</button></div></li>

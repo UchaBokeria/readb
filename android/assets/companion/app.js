@@ -2,9 +2,9 @@
 const $ = id => document.getElementById(id);
 let selectedPage = 'connection';
 let accessShown = false;
-function command(op) {
+function command(op, fields = {}) {
   if (op !== 'status') { $('notice').hidden = true; $('message').textContent = ''; }
-  if (window.Readb) window.Readb.command(JSON.stringify({op}));
+  if (window.Readb) window.Readb.command(JSON.stringify({op, ...fields}));
   else { $('notice').hidden = false; $('message').textContent = 'Device controls are available in the Android app.'; }
 }
 window.readbNavigate = page => {
@@ -25,11 +25,19 @@ window.updateReadb = state => {
   $('live').classList.toggle('active', tunnel);
   document.querySelector('.signal').classList.toggle('active', tunnel);
   $('connection-title').textContent = !state.enrolled ? 'Connect this device' : tunnel ? 'Private tunnel active' : running ? 'Starting your link' : 'Ready when you are';
-  $('connection-copy').textContent = !state.enrolled ? 'Import your setup to create a private link to your server.' : tunnel ? 'The tunnel is up. Check secure ADB below for device access.' : running ? 'Check the status below if the connection does not start.' : 'Your encrypted setup is saved. Start the link to reach your server.';
+  $('connection-copy').textContent = !state.enrolled ? 'Connect to your readb server with its address and a setup code.' : tunnel ? 'The tunnel is up. Check secure ADB below for device access.' : running ? 'Check the status below if the connection does not start.' : 'Your encrypted setup is saved. Start the link to reach your server.';
   $('hero-primary').hidden = !!state.enrolled;
   $('link-actions').hidden = !state.enrolled && !running;
   $('start').hidden = !state.enrolled;
   $('hero-primary').disabled = !state.enrolled && running;
+  $('setup-progress').hidden = !state.setup_message;
+  $('setup-progress').textContent = state.setup_message || '';
+  $('setup-connect').disabled = !!state.setup_active || !!state.enrolled;
+  $('setup-server').disabled = !!state.setup_active || !!state.enrolled;
+  $('setup-code').disabled = !!state.setup_active || !!state.enrolled;
+  $('setup-resume').hidden = !state.setup_saved || !!state.enrolled || !!state.setup_active;
+  $('setup-cancel').hidden = !state.setup_active;
+  if (state.enrolled || state.setup_active) $('setup-code').value = '';
   $('vpn').textContent = state.vpn_message || 'Not started';
   $('report').textContent = state.wireless_debugging === false ? 'Wireless debugging is off' : state.report_message || 'Not started';
   $('debug-warning').hidden = state.wireless_debugging !== false;
@@ -42,7 +50,7 @@ window.updateReadb = state => {
   $('remote-port-age').textContent = freshPort ? `Observed ${Math.floor(portAge / 1000)} seconds ago. This is the connection port, not the pairing port.` : state.wireless_debugging === false ? 'Enable wireless debugging to report the port.' : 'Waiting for a current secure ADB port.';
   const age = Date.now() - state.last_report_epoch;
   $('last').textContent = !state.last_report_epoch ? 'No report yet' : age < 0 ? 'Device clock changed' : age < 60000 ? `${Math.floor(age / 1000)} seconds ago` : `${Math.floor(age / 60000)} minutes ago`;
-  $('enrolled').textContent = state.enrolled ? 'Encrypted setup saved' : 'No setup imported yet';
+  $('enrolled').textContent = state.enrolled ? 'Encrypted setup saved' : state.setup_saved ? 'Setup saved — ready to resume' : 'Not connected yet';
   $('notifications').textContent = state.notifications ? 'Allowed' : 'Not allowed';
   $('notification-action').textContent = 'Notification settings';
   $('notification-action').dataset.action = 'notifications_settings';
@@ -60,6 +68,8 @@ window.updateReadb = state => {
   if (state.permission_setup_required === true && !accessShown) showAccess();
   if (state.message) { $('notice').hidden = false; $('message').textContent = state.message; }
 };
+$('hero-primary').addEventListener('click', () => window.readbNavigate('setup'));
+$('connect-form').addEventListener('submit', event => {event.preventDefault();const code=$('setup-code').value;command('setup_connect',{server:$('setup-server').value,code});$('setup-code').value='';});
 document.querySelectorAll('[data-action]').forEach(button => button.addEventListener('click', () => command(button.dataset.action)));
 document.querySelectorAll('[data-page]').forEach(button => button.addEventListener('click', () => window.readbNavigate(button.dataset.page)));
 function showAccess() {

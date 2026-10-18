@@ -21,6 +21,21 @@ public final class MainActivity extends Activity {
     private volatile boolean destroyed;
     private boolean importing;
     private boolean pageReady;
+    private volatile boolean profileReady,setupSaved;
+    private boolean setupActive;
+    private String setupPhase="idle",setupMessage="";
+    private long setupGeneration;
+    private OnboardingClient onboarding;
+    private final ExecutorService enrollmentWorker=Executors.newSingleThreadExecutor();
+    private void refreshProfile(){worker.execute(()->{boolean ready=ProfileStore.exists(this),saved=EnrollmentStore.present(this);runOnUiThread(()->{if(destroyed)return;profileReady=ready;setupSaved=saved;reply("");});});}
+    private void connectSetup(String address,String code){
+        if(setupActive){reply("Setup is already running. You can cancel safely.");return;}
+        if(importing||state().getBoolean("vpn_enabled",false)||state().getBoolean("report_enabled",false)){reply("Stop the private link before setting up a device.");return;}
+        long generation=++setupGeneration;setupActive=true;
+        onboarding=new OnboardingClient(this,(phase,message,active)->runOnUiThread(()->{if(destroyed||generation!=setupGeneration)return;setupPhase=phase;setupMessage=message;setupActive=active;if(!active)refreshProfile();reply("");}));
+        OnboardingClient client=onboarding;enrollmentWorker.execute(()->client.run(address,code));reply("");
+    }
+    private void cancelSetup(){++setupGeneration;if(onboarding!=null)onboarding.cancel();setupActive=false;setupPhase="paused";setupMessage="Setup paused. Saved data was kept. Resume when ready.";refreshProfile();reply("");}
     private android.content.SharedPreferences state() { return createDeviceProtectedStorageContext().getSharedPreferences("status",0); }
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
@@ -42,7 +57,7 @@ public final class MainActivity extends Activity {
         web.addJavascriptInterface(new Bridge(),"Readb");
         web.setWebViewClient(new WebViewClient() {
             @Override public void onPageStarted(WebView view,String url,android.graphics.Bitmap icon){pageReady=false;}
-            @Override public void onPageFinished(WebView view,String url){if("https://readb.invalid/".equals(url)){pageReady=true;reply("");}}
+            @Override public void onPageFinished(WebView view,String url){if("https://readb.invalid/".equals(url)){pageReady=true;refreshProfile();reply("");}}
             @Override public boolean shouldOverrideUrlLoading(WebView view,WebResourceRequest r) { return true; }
             @Override public WebResourceResponse shouldInterceptRequest(WebView view,WebResourceRequest r) {
                 String path=r.getUrl().getPath();
@@ -66,7 +81,8 @@ public final class MainActivity extends Activity {
                 .put("wireless_debugging",wireless==null?JSONObject.NULL:wireless)
                 .put("remote_port",remotePort==null?JSONObject.NULL:remotePort)
                 .put("port_observed_epoch",remotePort==null?0:debug.observedEpoch());
-            response.put("enrolled",ProfileStore.exists(this)).put("vpn_enabled",state().getBoolean("vpn_enabled",false)).put("vpn_active",state().getBoolean("vpn_active",false))
+            response.put("setup_active",setupActive).put("setup_saved",setupSaved).put("setup_phase",setupPhase).put("setup_message",setupMessage);
+            response.put("enrolled",profileReady).put("vpn_enabled",state().getBoolean("vpn_enabled",false)).put("vpn_active",state().getBoolean("vpn_active",false))
                 .put("report_enabled",state().getBoolean("report_enabled",false)).put("report_message",state().getString("report_message","Not started"))
                 .put("vpn_message",state().getString("vpn_message","Not started")).put("last_report_epoch",state().getLong("last_report_epoch",0))
                 .put("notifications",getSystemService(NotificationManager.class).areNotificationsEnabled())
@@ -110,8 +126,8 @@ public final class MainActivity extends Activity {
         }}catch(RuntimeException unavailable){permissionFlow=null;reply("That Android prompt is unavailable. Review device access in Settings.");}
     }
     private void start() {
-        if(importing) { reply("Finish enrollment import first.");return; }
-        if(!ProfileStore.exists(this)) { reply("Import an enrollment profile first.");return; }
+        if(importing||setupActive) { reply("Finish device setup first.");return; }
+        if(!profileReady) { reply("Connect this device to your server first.");return; }
         Intent consent=android.net.VpnService.prepare(this);
         if(consent!=null) { startActivityForResult(consent,11);return; }
         try { ProfileStore.enable(this);BootVpnService.startIfEnabled(this);startForegroundService(new Intent(this,ReportService.class));reply("Starting private link."); }
@@ -119,13 +135,17 @@ public final class MainActivity extends Activity {
     }
     private final class Bridge {
         @JavascriptInterface public void command(String text) {
-            if(text==null || text.length()>512 || destroyed)return;
+            if(text==null || text.length()>4096 || destroyed)return;
             runOnUiThread(()-> {
                 try {
                     JSONObject r=new JSONObject(text);String op=r.getString("op");
                     switch(op) {
-                        case "status":reply("");break;
+                        case "status":refreshProfile();break;
+                        case "setup_connect":connectSetup(r.getString("server"),r.getString("code"));break;
+                        case "setup_resume":connectSetup(null,null);break;
+                        case "setup_cancel":cancelSetup();break;
                         case "import":
+                            if(setupActive||setupSaved){reply("A saved device setup is present. Resume it; existing data was kept.");break;}
                             if(state().getBoolean("vpn_enabled",false)||state().getBoolean("report_enabled",false)){reply("Stop the private link before changing its profile.");break;}
                             importing=true;Intent file=new Intent(Intent.ACTION_OPEN_DOCUMENT).setType("application/json").addCategory(Intent.CATEGORY_OPENABLE);startActivityForResult(file,10);break;
                         case "start":start();break;
@@ -151,7 +171,7 @@ public final class MainActivity extends Activity {
     @Override protected void onActivityResult(int request,int result,Intent data) {
         super.onActivityResult(request,result,data);
         if(request==ACCESS_NOTIFICATIONS||request==ACCESS_VPN){advanceAccess();return;}
-        if(request==MANUAL_VPN){reply(result==RESULT_OK?"readb VPN approved. Import setup and choose Start private link when ready.":"VPN access was not approved. Your saved setup was kept.");return;}
+        if(request==MANUAL_VPN){reply(result==RESULT_OK?"readb VPN approved. Finish device setup and choose Start private link when ready.":"VPN access was not approved. Your saved setup was kept.");return;}
         if(request==11) { if(result==RESULT_OK)start();else reply("VPN permission was not granted.");return; }
         if(request==10)importing=false;
         if(request==10 && result==RESULT_OK && data!=null && data.getData()!=null) {
@@ -161,14 +181,14 @@ public final class MainActivity extends Activity {
                 try(InputStream in=getContentResolver().openInputStream(uri)) {
                     if(in==null)throw new IOException();
                     byte[] bytes=in.readNBytes(8193);
-                    ProfileStore.save(this,bytes);java.util.Arrays.fill(bytes,(byte)0);reply("Profile saved in encrypted device storage. Start when ready.");
+                    ProfileStore.save(this,bytes);java.util.Arrays.fill(bytes,(byte)0);profileReady=true;reply("Profile saved in encrypted device storage. Start when ready.");
                 } catch(Exception e) { reply("Enrollment refused. Stop services and check the profile; existing data was kept."); }
                 finally { runOnUiThread(()->importing=false); }
             });
         }
     }
     @Override public void onRequestPermissionsResult(int request,String[] permissions,int[] results){super.onRequestPermissionsResult(request,permissions,results);if(request==ACCESS_RUNTIME)advanceAccess();else reply("");}
-    @Override protected void onStart(){super.onStart();if(debug!=null){debug.start();reply("");}}
+    @Override protected void onStart(){super.onStart();if(debug!=null){debug.start();refreshProfile();reply("");}}
     @Override protected void onStop(){if(debug!=null)debug.stop();super.onStop();}
-    @Override protected void onDestroy() { destroyed=true;worker.shutdownNow();if(web!=null){web.removeJavascriptInterface("Readb");web.destroy();}super.onDestroy(); }
+    @Override protected void onDestroy() { destroyed=true;++setupGeneration;if(onboarding!=null)onboarding.cancel();enrollmentWorker.shutdownNow();worker.shutdownNow();if(web!=null){web.removeJavascriptInterface("Readb");web.destroy();}super.onDestroy(); }
 }
