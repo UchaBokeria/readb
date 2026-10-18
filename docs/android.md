@@ -79,3 +79,21 @@ stable release; do not replace the upstream licenses with readb's custom terms.
 Sources: [tunnel POM](https://repo.maven.apache.org/maven2/com/wireguard/android/tunnel/1.0.20260102/tunnel-1.0.20260102.pom),
 [collection POM](https://dl.google.com/dl/android/maven2/androidx/collection/collection-jvm/1.5.0/collection-jvm-1.5.0.pom),
 [annotation POM](https://dl.google.com/dl/android/maven2/androidx/annotation/annotation-jvm/1.9.1/annotation-jvm-1.9.1.pom).
+
+## App-window capture (development only)
+
+Build with `--ui-checks`. The test APK includes `.UiChecks`; ordinary builds omit
+it. Run synchronously under the device controller:
+
+```sh
+quest-adb --ticket "$JOB_TICKET" shell am instrument -w dev.readb.companion/.UiChecks
+quest-adb --ticket "$JOB_TICKET" shell am instrument -w -e section bottom dev.readb.companion/.UiChecks
+```
+
+Requires no enrolled profile. It launches only readb, checks document readiness,
+horizontal overflow and44px targets, then copies its actual hardware window with
+[PixelCopy](https://developer.android.com/reference/android/view/PixelCopy). The
+result contains a bounded `png_base64` capture; save privately and inspect it.
+It closes its test activity and does not import profiles, grant permissions or
+start a VPN/report service. Capture is window-content evidence, not hand comfort,
+headset positioning, protected unlock or reboot acceptance.

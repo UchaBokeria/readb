@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parent
 REPO = ROOT.parent
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('--storage-checks', action='store_true', help='Include isolated development instrumentation; never for release')
+p.add_argument('--ui-checks', action='store_true', help='Include own-window development capture; never for release')
 p.add_argument('--sdk', type=Path, required=True)
 p.add_argument('--native-lib', type=Path, required=True, help='arm64 libreadb_android_core.so')
 p.add_argument('--build-dir', type=Path, default=REPO / 'build/android')
@@ -53,11 +54,13 @@ with zipfile.ZipFile(deps / 'tunnel.aar') as z:
 validate_native((deps / 'libwg-go.so').read_bytes())
 run(tools / 'aapt2', 'compile', '--dir', ROOT / 'res', '-o', out / 'resources.zip')
 manifest = ROOT / 'AndroidManifest.xml'
-if a.storage_checks:
+if a.storage_checks or a.ui_checks:
     ns = 'http://schemas.android.com/apk/res/android'
     ET.register_namespace('android', ns)
     tree = ET.parse(manifest)
-    ET.SubElement(tree.getroot(), 'instrumentation', {f'{{{ns}}}name': '.StorageChecks', f'{{{ns}}}targetPackage': 'dev.readb.companion'})
+    for enabled, name in [(a.storage_checks, '.StorageChecks'), (a.ui_checks, '.UiChecks')]:
+        if enabled:
+            ET.SubElement(tree.getroot(), 'instrumentation', {f'{{{ns}}}name': name, f'{{{ns}}}targetPackage': 'dev.readb.companion'})
     manifest = out / 'test-manifest.xml'
     tree.write(manifest, encoding='utf-8', xml_declaration=True)
 run(tools / 'aapt2', 'link', '-o', out / 'base.apk', '-I', jar, '--manifest', manifest, out / 'resources.zip')
@@ -67,8 +70,9 @@ for stale in classes.rglob('*.class'):
     stale.unlink()
 jars = [deps / 'tunnel.jar', *[deps / name for name in DEPENDENCIES if name.endswith('.jar')]]
 sources = sorted((ROOT / 'src').rglob('*.java'))
-if a.storage_checks:
-    sources.extend(sorted((ROOT / 'tests/dev').rglob('*.java')))
+for enabled, name in [(a.storage_checks, 'StorageChecks'), (a.ui_checks, 'UiChecks')]:
+    if enabled:
+        sources.append(ROOT / ('tests/dev/readb/companion/' + name + '.java'))
 run('javac', '-source', '11', '-target', '11', '-classpath', os.pathsep.join(str(x) for x in [jar, *jars]), '-d', classes, *sources)
 run(tools / 'd8', '--lib', jar, '--min-api', '33', '--output', out, *sorted(classes.rglob('*.class')), *jars)
 with zipfile.ZipFile(out / 'base.apk', 'a') as z:

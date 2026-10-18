@@ -124,3 +124,7 @@ Installer admission hardened:170 workspace tests/fmt/Clippy and focused review p
 Unrelated units/configs survive rejected installs. Multi-file user journal remains
 next; no production cutover. Quest2D panel candidate passes6storage checks and
 1280x900 focus/frame, but actual panel visual capture remains unproved.
+
+Quest actual-window top/bottom captures now pass development UiChecks and visual
+review at1280x900; all6storage checks pass after upgrade. No real profile/VPN/report
+activation. Hands/resize lifecycle, protected boot and migration acceptance remain.
