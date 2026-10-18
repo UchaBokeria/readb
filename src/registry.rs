@@ -430,6 +430,7 @@ impl Registry {
         json!({"schema":1,"pid":std::process::id(),"config_fingerprint":fingerprint(&c.config).ok(),"maintenance":*self.maintenance.lock().unwrap(),"catalog_cleanup_unknown":self.catalog_store.fenced(),"listener_errors":*self.listener_errors.lock().unwrap(),"devices":c.config.devices.iter().map(|d|{let mut v=c.devices[&d.id].status();v["id"]=json!(d.id);v["name"]=json!(d.name);v["kind"]=json!(d.kind);v}).collect::<Vec<_>>()})
     }
     pub fn add(&self, d: Device, listener: Option<Listener>) -> Res<Value> {
+        let _allocation = crate::enrollment_journal::catalog_guard(&self.root)?;
         if crate::enrollment_journal::inspect(&self.root)?.contains_key(&d.id) {
             return Err("enrollment_pending: use original typed enrollment transaction".into());
         }

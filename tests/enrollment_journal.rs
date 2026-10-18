@@ -368,3 +368,16 @@ fn expired_idle_ticket_can_rebind_but_persisted_unknown_work_and_other_state_can
     drop(store);
     fs::remove_dir_all(p).unwrap();
 }
+#[test]
+fn ordinary_catalog_add_cannot_race_an_inflight_enrollment_allocator() {
+    let p = dir();
+    let registry = readb::registry::Registry::new(config(), p.clone()).unwrap();
+    let allocation = Store::open(&p, "/usr/bin/wg".as_ref()).unwrap();
+    let import = material().server_import().unwrap();
+    let result = registry.add(import.device.clone(), import.listener.clone());
+    assert!(result.err().is_some_and(|e| e.contains("enrollment_busy")));
+    assert!(registry.config().devices.is_empty());
+    drop(allocation);
+    registry.add(import.device, import.listener).unwrap();
+    fs::remove_dir_all(p).unwrap();
+}

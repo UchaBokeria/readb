@@ -216,3 +216,12 @@ Ticket publication errors retain the lease for exact recovery. Public ADB/jobs,
 views and reports remain blocked even with that ticket. Targeted53 journal,
 backend, registry and network-controller checks pass, plus all-target Clippy.
 Typed network execution and actual catalog publication are still not wired.
+
+Catalog allocation race: a concrete RED test showed ordinary `device add` could
+publish while enrollment held its allocation lock but had not yet published a
+journal. Ordinary add now takes the same global allocation lock before checking
+pending IDs and retains it through catalog publication. Its guard cannot generate
+keys. The lock contention returns `enrollment_busy`, leaves the catalog unchanged,
+and succeeds once allocation releases. The focused8 journal and7 registry checks
+pass. This closes that entry-point race; it does not implement typed enrollment
+catalog mutation yet.

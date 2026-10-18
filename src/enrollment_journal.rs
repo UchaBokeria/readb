@@ -291,10 +291,23 @@ pub struct Store {
     _lock: File,
     observed: Option<String>,
     poisoned: bool,
-    wg: std::path::PathBuf,
+    wg: Option<std::path::PathBuf>,
+}
+pub(crate) struct AllocationGuard {
+    _store: Store,
+}
+/// Ordinary catalog add shares the allocator lock, including its journal check.
+/// It has no key-generation capability and may not act as an enrollment writer.
+pub(crate) fn catalog_guard(root: &Path) -> Res<AllocationGuard> {
+    Ok(AllocationGuard {
+        _store: Store::open_inner(root, None)?,
+    })
 }
 impl Store {
     pub fn open(root: &Path, wg: &Path) -> Res<Self> {
+        Self::open_inner(root, Some(wg.to_path_buf()))
+    }
+    fn open_inner(root: &Path, wg: Option<std::path::PathBuf>) -> Res<Self> {
         let dir = directory(root, true)?.ok_or("enrollment_directory_unavailable")?;
         let fd = unsafe {
             libc::openat(
@@ -326,7 +339,7 @@ impl Store {
             _lock: lock,
             observed,
             poisoned: false,
-            wg: wg.to_path_buf(),
+            wg,
         })
     }
     fn load(&self) -> Res<Journal> {
@@ -484,7 +497,13 @@ impl Store {
         if fingerprint(current)? != r.expected_config {
             return Err("enrollment_catalog_changed: restore expected catalog or inspect pending enrollment".into());
         }
-        let import = Material::from_private(&r.material, &self.wg)?.server_import()?;
+        let import = Material::from_private(
+            &r.material,
+            self.wg
+                .as_deref()
+                .ok_or("enrollment_keygen_tool_not_configured")?,
+        )?
+        .server_import()?;
         let mut next = current.clone();
         next.devices.push(import.device);
         if let Some(l) = import.listener {
