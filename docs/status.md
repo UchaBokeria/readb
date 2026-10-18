@@ -114,3 +114,19 @@ exceeded its simplified12s manager timeout; evidence was retained and the bounde
 owned-process kill path brought it in line with the real unit stop contract.
 Full Rust1.88/musl release workspace291 tests also pass. No live upgrade,
 device migration, VPN change or host reboot was performed by these checks.
+
+## First-use work — October19
+
+Pixel appearance accepted. The owner’s next gate is a real fresh-user setup,
+without importing a profile file. Native HTTPS address/code entry, resume/cancel,
+encrypted storage/final receipt and confirmed bootstrap-address correction are
+in source. Dashboard has Add device UI. Server invitation/HTTP/effect adapters
+and authenticated report-firewall broker are in implementation. Not deployed or
+accepted on a device. Legacy routes remain canonical.
+
+Native HTTPS passed real local TLS rejection/redirect/bounds/cancel tests.
+Storage passed fault/recovery tests; these do not prove Android Keystore delivery.
+Combined core71f773e portablec9d0f2bc passed14 isolated forward/rollback scenarios.
+No live upgrade from these checks. See [first-use plan](enrollment-first-user.md)
+and [release gates](acceptance.md). Owner Chrome extension currently unavailable;
+new dashboard visual review is blocked. No fallback browser was used.
