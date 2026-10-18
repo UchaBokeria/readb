@@ -106,7 +106,10 @@ fn local(registry: &Registry) -> Res<Local> {
     })
 }
 fn firewall() -> Value {
-    json!({"schema":1,"adapter":"ufw-v1","available":false,"supported":false,"authenticated":false,"code":"report_firewall_setup_required"})
+    let mut value = serde_json::to_value(crate::report_firewall::prerequisite())
+        .expect("public prerequisite encoding");
+    value["authenticated"] = json!(false);
+    value
 }
 fn output(request: &Request, candidate: Option<Plan>, code: &str, detail: &str) -> Value {
     let detail = detail

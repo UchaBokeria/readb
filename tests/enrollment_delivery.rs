@@ -33,6 +33,16 @@ fn java_recipient_rust_envelope_authenticated_receipts_and_exact_recovery() {
         root.to_str().unwrap(),
     ]));
     let request = fs::read(root.join("request")).unwrap();
+    readb::enrollment_delivery::validate_request(&request).unwrap();
+    assert!(
+        readb::enrollment_delivery::validate_request(&fs::read(root.join("weak-request")).unwrap())
+            .is_err()
+    );
+    assert!(readb::enrollment_delivery::validate_request(b"invalid").is_err());
+    assert!(
+        readb::enrollment_delivery::validate_request(&[request.as_slice(), b"trailing"].concat())
+            .is_err()
+    );
     let context = Context::new(&"a".repeat(64), "pixel-readb", &"b".repeat(64)).unwrap();
     let profile = serde_json::to_vec(&serde_json::json!({"schema":1,"device_id":"pixel-readb","server_peer":"10.99.0.2","server_port":19193,"device_address":"10.99.0.102","token":"1".repeat(64),"private_key":format!("{}AAA=","B".repeat(40)),"server_public_key":format!("{}AAA=","E".repeat(40)),"endpoint":"vpn.example.org:51820","keep_awake":true,"prevent_lock":true})).unwrap();
     let prepared = Prepared::seal(&context, &request, &profile).unwrap();

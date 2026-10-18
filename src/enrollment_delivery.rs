@@ -119,6 +119,11 @@ impl Context {
         &self.bytes
     }
 }
+/// Validate a bounded recipient request before consuming an invitation.
+/// No encryption, random generation, storage or delivery authority is created.
+pub fn validate_request(bytes: &[u8]) -> Res<()> {
+    request(bytes).map(|_| ())
+}
 fn request(bytes: &[u8]) -> Res<RsaPublicKey> {
     if bytes.len() > MAX_REQUEST {
         return Err(error());
