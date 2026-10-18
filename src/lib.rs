@@ -79,3 +79,5 @@ pub mod enrollment_ports;
 pub mod enrollment_output;
 
 pub mod report_firewall;
+pub mod enrollment_flow;
+pub mod enrollment_preview;

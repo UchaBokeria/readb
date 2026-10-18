@@ -145,6 +145,17 @@ pub fn control_client(mut s: UnixStream, r: Arc<Registry>) {
                 reply(&mut s, &json!({"events":events}), 0)
             }
         }
+        Ok(req) if req.action == "device-enroll-preview" => {
+            let result = crate::enrollment_preview::handle(
+                &r,
+                &req,
+                &mut crate::enrollment_preview::SystemProbe,
+            );
+            match result {
+                Ok(value) => reply(&mut s, &value, 0),
+                Err(error) => reply(&mut s, &json!({"error":error}), 78),
+            }
+        }
         Ok(req) if req.action == "network-status" => {
             match crate::network_runtime::call(crate::network_runtime::Call::Status) {
                 Ok(value) => reply(&mut s, &value, 0),

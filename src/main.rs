@@ -362,6 +362,22 @@ enum ContextCmd {
 }
 #[derive(Subcommand)]
 enum DeviceCmd {
+    #[command(about = "Inspect a new device plan; advisory only, no setup changes")]
+    Enroll {
+        #[arg(long)]
+        name: String,
+        #[arg(long, value_enum)]
+        kind: EnrollmentKind,
+        #[arg(long, help = "Server WireGuard hostname:port; no secrets")]
+        endpoint: String,
+        #[arg(long, default_value_t = 19193, value_parser=clap::value_parser!(u16).range(1024..))]
+        report_port: u16,
+        #[arg(
+            long,
+            help = "Required: apply is not available until secure enrollment is complete"
+        )]
+        dry_run: bool,
+    },
     Ls,
     Inspect,
     #[command(about = "Import a private device JSON without restarting other devices")]
@@ -396,6 +412,21 @@ enum DeviceCmd {
         #[arg(long)]
         yes: bool,
     },
+}
+#[derive(Clone, ValueEnum)]
+enum EnrollmentKind {
+    Phone,
+    Quest,
+    Android,
+}
+impl EnrollmentKind {
+    fn kind(&self) -> readb::schema::Kind {
+        match self {
+            Self::Phone => readb::schema::Kind::Phone,
+            Self::Quest => readb::schema::Kind::Quest,
+            Self::Android => readb::schema::Kind::Android,
+        }
+    }
 }
 #[derive(Clone, ValueEnum)]
 enum Mode {
@@ -503,6 +534,42 @@ fn output(v: &Value) {
 }
 fn run() -> Res<i32> {
     let c = Cli::parse();
+    // Refuse apply/authority before reading a context or private ticket.
+    let enrollment_preview = match &c.command {
+        Cmd::Device(DeviceCmd::Enroll {
+            name,
+            kind,
+            endpoint,
+            report_port,
+            dry_run,
+        }) => {
+            if !dry_run {
+                return Err(
+                    "enrollment_dry_run_required: use --dry-run; apply is not available".into(),
+                );
+            }
+            if c.ticket.is_some() {
+                return Err(
+                    "enrollment_preview_ticket_forbidden: dry-run needs no controller ticket"
+                        .into(),
+                );
+            }
+            required_device(&c)?;
+            let request = readb::enrollment_profile::Request {
+                id: c.device.clone().unwrap(),
+                name: name.clone(),
+                kind: kind.kind(),
+                endpoint: endpoint.clone(),
+                report_port: *report_port,
+            };
+            request.validate()?;
+            Some(
+                serde_json::to_string(&request)
+                    .map_err(|_| "enrollment_request_encoding_failed")?,
+            )
+        }
+        _ => None,
+    };
     if let Some(p) = &c.state_dir {
         unsafe {
             std::env::set_var("READB_STATE_DIR", p);
@@ -959,6 +1026,10 @@ fn run() -> Res<i32> {
             }
             req.device = id.clone();
             req.action = "network-rm".into();
+        }
+        Cmd::Device(DeviceCmd::Enroll { .. }) => {
+            req.action = "device-enroll-preview".into();
+            req.args = vec![enrollment_preview.ok_or("enrollment_request_missing")?];
         }
         Cmd::Device(DeviceCmd::Ls) | Cmd::Doctor | Cmd::Job(JobCmd::Ls) => {}
         Cmd::Device(DeviceCmd::Inspect) | Cmd::Job(JobCmd::Inspect) => {

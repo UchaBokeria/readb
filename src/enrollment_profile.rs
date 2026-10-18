@@ -33,6 +33,20 @@ pub struct Request {
     pub endpoint: String,
     pub report_port: u16,
 }
+impl Request {
+    pub fn validate(&self) -> Res<()> {
+        if !valid_id(&self.id)
+            || self.name.is_empty()
+            || self.name.len() > 100
+            || self.name.chars().any(char::is_control)
+            || !endpoint(&self.endpoint)
+            || self.report_port < 1024
+        {
+            return Err("enrollment_request_invalid".into());
+        }
+        Ok(())
+    }
+}
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Reservation {
@@ -157,7 +171,7 @@ impl Facts {
     }
 }
 impl Plan {
-    fn validate(&self) -> Res<()> {
+    pub(crate) fn validate(&self) -> Res<()> {
         if self.schema != 1
             || !valid_id(&self.id)
             || self.name.is_empty()
@@ -204,15 +218,7 @@ pub fn plan(
 ) -> Res<Plan> {
     facts.validate()?;
     config.validate()?;
-    if !valid_id(&request.id)
-        || request.name.is_empty()
-        || request.name.len() > 100
-        || request.name.chars().any(char::is_control)
-        || !endpoint(&request.endpoint)
-        || request.report_port < 1024
-    {
-        return Err("enrollment_request_invalid".into());
-    }
+    request.validate()?;
     if config.devices.iter().any(|d| d.id == request.id)
         || facts.managed.contains_key(&request.id)
         || reserved.iter().any(|r| r.id == request.id)
