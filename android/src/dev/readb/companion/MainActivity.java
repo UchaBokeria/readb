@@ -154,6 +154,7 @@ public final class MainActivity extends Activity {
         @JavascriptInterface public void command(String text) {
             if(text==null || text.length()>4096 || destroyed)return;
             runOnUiThread(()-> {
+                if(destroyed)return;
                 try {
                     JSONObject r=new JSONObject(text);String op=r.getString("op");
                     switch(op) {
