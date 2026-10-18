@@ -546,7 +546,7 @@ $("#invite-form").addEventListener("submit", async event => {
   $("#submit-invite").disabled = true;
   $("#invite-result").textContent = "Checking the server’s device setup…";
   try {
-    const result = await api("/api/onboard/invite", {method:"POST",signal:abort.signal,body:JSON.stringify({name:$("#invite-name").value.trim(),kind:$("#invite-kind").value,endpoint:$("#invite-endpoint").value.trim(),client_session:session})});
+    const result = await api("/api/onboard/invite", {method:"POST",signal:abort.signal,body:JSON.stringify({name:$("#invite-name").value.trim(),kind:$("#invite-kind").value,endpoint:$("#invite-endpoint").value.trim(),setup_url:location.origin,client_session:session})});
     if (generation !== inviteGeneration) return;
     if (result.schema !== 1 || result.code !== "setup_invitation" || !/^[a-f0-9]{4}(-[a-f0-9]{4}){3}$/.test(result.setup_code) || !Number.isFinite(result.expires_at)) throw new Error("The server returned an incompatible setup reply.");
     $("#invite-fields").hidden = true;
