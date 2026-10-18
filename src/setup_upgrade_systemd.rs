@@ -1118,6 +1118,13 @@ pub fn quiet_marker(
     config: &str,
     release: bool,
 ) -> Res<Value> {
+    // A lost release acknowledgement may be retried after later legitimate
+    // enrollment. Only publication takes the allocator, before runtime/catalog.
+    let _allocation = if release {
+        None
+    } else {
+        Some(crate::enrollment_journal::maintenance_guard(state)?)
+    };
     let _runtime = crate::catalog::existing_runtime_lock(state, file)?;
     let (_, pin) = load_empty(state, file)?;
     if pin != config {

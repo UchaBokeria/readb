@@ -238,3 +238,25 @@ keeps the file and returns unconfirmed; exact retry rechecks and syncs it. Recei
 contains only content fingerprint/recovered state. Two integration checks plus
 one injected sync-failure check pass (all21 library checks pass). No CLI transport,
 server completion or Android-delivery code is connected to this helper yet.
+
+Combined upgrade admission (source only): maintenance prepare, offline empty
+bootstrap and rollback quiet-marker publication all take the allocator before
+catalog/transports/runtime/marker locks. Any currently defined enrollment record
+is pending, even with an empty catalog, so upgrade publication refuses it.
+Enrollment open and each mutation recheck the validated durable upgrade marker
+under that same lock; malformed marker state also refuses. Read-only inspection
+and exact lost-release acknowledgement stay independent. A later legitimate new
+enrollment cannot prevent acknowledging an already removed upgrade marker.
+
+A deterministic duplicated-FD test reproduced fork-inherited flock retention
+after parent close. The allocator now explicitly unlocks its own acquired open
+file description before close; it never replaces an inode, steals or polls.
+Concurrent allocator, pre-catalog pending state, cached marker, malformed marker,
+offline bootstrap, actual quiet publication/release and existing maintenance/
+upgrade regressions pass. The accepted rollback51570cf was cherry-picked into
+the isolated branch before this combined check. No live upgrade is implied.
+
+During verification root disk pressure truncated one test file. Production WIP
+was preserved and byte-compared unchanged, committed tests were restored and the
+exact new cases reconstructed. Builds now use separate `/tmp` target, one job,
+debug0/incremental0. No owner files or unrelated caches were deleted.

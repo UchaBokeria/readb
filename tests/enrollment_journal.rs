@@ -468,3 +468,40 @@ fn offline_bootstrap_publication_refuses_pending_before_process_or_empty_catalog
     assert!(!p.join("upgrade-maintenance.json").exists());
     fs::remove_dir_all(p).unwrap();
 }
+#[test]
+fn quiet_publication_excludes_pending_but_lost_release_ack_allows_new_enrollment() {
+    let p = dir();
+    let file = p.join("server.json");
+    readb::catalog::Store::new(&p, &file)
+        .publish(&config(), None)
+        .unwrap();
+    let registry = readb::registry::Registry::new_at(config(), p.clone(), file.clone()).unwrap();
+    let pin = registry.config_fingerprint().unwrap();
+    let tag = "a".repeat(64);
+    let mut allocation = Store::open(&p, "/usr/bin/wg".as_ref()).unwrap();
+    assert!(
+        readb::setup_upgrade_systemd::quiet_marker(&p, &file, &tag, &pin, false)
+            .unwrap_err()
+            .contains("enrollment_busy")
+    );
+    assert!(!p.join("upgrade-maintenance.json").exists());
+    allocation.begin(material(), &owner()).unwrap();
+    drop(allocation);
+    let original = fs::read(p.join("enrollment/journal.json")).unwrap();
+    assert!(
+        readb::setup_upgrade_systemd::quiet_marker(&p, &file, &tag, &pin, false)
+            .unwrap_err()
+            .contains("enrollment_pending")
+    );
+    assert!(!p.join("upgrade-maintenance.json").exists());
+    // The saved exact release owner may acknowledge already-removed marker even
+    // after legitimate later work starts; publication and removal have different gates.
+    let allocation = Store::open(&p, "/usr/bin/wg".as_ref()).unwrap();
+    assert!(
+        readb::setup_upgrade_systemd::quiet_marker(&p, &file, &tag, &pin, true).unwrap()["released"]
+            == true
+    );
+    assert!(fs::read(p.join("enrollment/journal.json")).unwrap() == original);
+    drop(allocation);
+    fs::remove_dir_all(p).unwrap();
+}
