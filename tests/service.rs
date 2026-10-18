@@ -79,15 +79,28 @@ fn installer_reads_executing_inode_after_its_path_is_removed() {
     let path =
         std::env::temp_dir().join(format!("readb-source-fixture-{}", readb::policy::random()));
     fs::copy(std::env::current_exe().unwrap(), &path).unwrap();
-    let result = Command::new(&path)
-        .args([
-            "--exact",
-            "installer_reads_executing_inode_after_its_path_is_removed",
-            "--nocapture",
-        ])
-        .env("READB_SOURCE_FIXTURE", "1")
-        .output()
-        .unwrap();
+    // Another test thread can briefly fork while this fixture is copied,
+    // inheriting its write descriptor until exec. Retry only Linux ETXTBSY;
+    // never retry the test itself or hide an execution/test failure.
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    let result = loop {
+        let output = Command::new(&path)
+            .args([
+                "--exact",
+                "installer_reads_executing_inode_after_its_path_is_removed",
+                "--nocapture",
+            ])
+            .env("READB_SOURCE_FIXTURE", "1")
+            .output();
+        match output {
+            Err(e)
+                if e.raw_os_error() == Some(libc::ETXTBSY) && std::time::Instant::now() < until =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            output => break output.unwrap(),
+        }
+    };
     let _ = fs::remove_file(path);
     assert!(
         result.status.success(),

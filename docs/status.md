@@ -174,3 +174,9 @@ its isolated rerun and complete serial suite pass, cause not conclusively proved
 Two overlapping validation attempts linked newly edited tests against a stale
 library; discarded, followed by frozen-tree checks above. No production effect.
 Full activation/controller scope/encrypted handover/device cutover remain open.
+
+The self-copy execution fixture now bounds retries of Linux ETXTBSY to1second;
+other spawn errors and the executed test's failures are never retried. A controlled
+inherited-writer probe reproduced the OS mechanism; the original racing child was
+not captured.12 parallel seven-case service cycles and fresh full194host+194musl,
+Clippy/fmt pass. This changes the fixture only, not installer retry semantics.
