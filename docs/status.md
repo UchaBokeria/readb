@@ -50,7 +50,7 @@ headset connectivity, unattended first unlock or release readiness.
 
 ## Next gates
 
-1. Journaled managed upgrade and saved-provider admission for exact managed peers.
+1. Journaled managed upgrade, original setup binding and old empty-server bootstrap.
 2. Authenticated one-use encrypted old/new Android UID handover; preserve PIN/keys.
 3. Actual Quest and Pixel permission/VPN/report/port/UI/boot/cutover/rollback checks.
 4. Fresh-interface/dependency/init support, configured four-agent behavior smokes,
@@ -74,3 +74,10 @@ mount/network namespaces with a synthetic kernel. Exact recorded healthy peers
 alone are excluded; unknown peers and pending/drift remain fail-closed. Proof
 executables removed; live user-service PIDs unchanged. Root upgrade consumer and
 saved-baseline binding are still pending. No provider/peer/device was migrated.
+
+Managed-provider consumer now passes266host+266Rust1.88/musl, fmt/Clippy and
+independent review. It authenticates helper evidence, binds policy and complete
+current snapshot, verifies the saved external state and rechecks evidence before
+return. Original strict inspection/receipt shape remain unchanged. The root
+transaction still must bind the original setup journal/provider and serialize
+maintenance/install/start/binding/release; no live upgrade is implied.

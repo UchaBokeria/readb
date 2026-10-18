@@ -156,3 +156,9 @@ or missing/changed managed peer refuses. Exclusion uses exact recorded keys and
 routes; an unknown in-range peer stays external. This is read-only evidence, not
 an upgrade or permission to replace the saved baseline. The pending consumer must
 verify helper identity/policy hash and compare the original saved external peers.
+
+`setup_provider::inspect_managed` is the read-only consumer: it authenticates the
+root socket, validates policy and complete live snapshot, runs the existing saved
+VPN verifier on external peers, then rechecks helper evidence. Receipt shape stays
+unchanged. Original `inspect` stays strict. The upgrade transaction must still bind
+this receipt and baseline to the original setup proof before any stop or install.

@@ -4,7 +4,7 @@ use crate::{
     network::{Policy, Snapshot, valid_key},
     policy::Res,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -413,7 +413,84 @@ fn bus(args: &[&str]) -> Res<serde_json::Value> {
     }
     serde_json::from_slice(&r.out).map_err(|_| "provider_unit_bus_reply_invalid".into())
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManagedEvidence {
+    schema: u8,
+    policy_sha256: String,
+    external_baseline: Snapshot,
+    devices: BTreeMap<String, crate::network::Peer>,
+}
+// Pure validation, not authentication. Only inspect_managed obtains this value
+// from the credential-checked root helper; never accept caller-supplied evidence.
+fn managed_baseline(
+    policy: &Policy,
+    live: &Snapshot,
+    evidence: &serde_json::Value,
+) -> Res<Snapshot> {
+    policy.validate()?;
+    let e: ManagedEvidence = serde_json::from_value(evidence.clone())
+        .map_err(|_| "provider_managed_evidence_invalid")?;
+    let digest: String =
+        Sha256::digest(serde_json::to_vec(policy).map_err(|_| "provider_policy_encoding_failed")?)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+    if e.schema != 1 || e.policy_sha256 != digest || e.devices.len() > 4096 {
+        return Err("provider_managed_policy_mismatch".into());
+    }
+    let mut reconstructed = e.external_baseline.clone();
+    let mut addresses = BTreeSet::new();
+    for (id, peer) in e.devices {
+        if !readb_protocol::valid_device_id(&id)
+            || !valid_key(&peer.key)
+            || peer.key == policy.server_key
+            || peer.address < policy.first
+            || peer.address > policy.last
+            || !addresses.insert(peer.address)
+            || reconstructed.peers.contains_key(&peer.key)
+        {
+            return Err("provider_managed_peer_invalid_or_overlap".into());
+        }
+        reconstructed
+            .peers
+            .insert(peer.key, vec![format!("{}/32", peer.address)]);
+    }
+    let mut current = live.clone();
+    for snapshot in [&mut current, &mut reconstructed] {
+        for routes in snapshot.peers.values_mut() {
+            routes.sort();
+            routes.dedup();
+        }
+    }
+    if current != reconstructed {
+        return Err("provider_managed_live_snapshot_changed".into());
+    }
+    Ok(e.external_baseline)
+}
+/// Read-only managed-provider inspection. Authenticate root helper evidence,
+/// bind its policy and complete current snapshot, then compare only the exact
+/// external baseline to saved VPN state. Recheck helper evidence before return.
+/// This does not compare the original setup receipt or authorize an upgrade.
+pub fn inspect_managed(policy: &Policy, listen_port: u16) -> Res<Receipt> {
+    if unsafe { libc::geteuid() } != 0 {
+        return Err("provider_inspection_requires_root".into());
+    }
+    let evidence = crate::network_runtime::call(crate::network_runtime::Call::ProviderBaseline)?;
+    let receipt = inspect_inner(policy, listen_port, Some(&evidence))?;
+    if crate::network_runtime::call(crate::network_runtime::Call::ProviderBaseline)? != evidence {
+        return Err("provider_managed_evidence_changed_during_inspection".into());
+    }
+    Ok(receipt)
+}
 pub fn inspect(policy: &Policy, listen_port: u16) -> Res<Receipt> {
+    inspect_inner(policy, listen_port, None)
+}
+fn inspect_inner(
+    policy: &Policy,
+    listen_port: u16,
+    evidence: Option<&serde_json::Value>,
+) -> Res<Receipt> {
     use crate::network::Kernel;
     if unsafe { libc::geteuid() } != 0 {
         return Err("provider_inspection_requires_root".into());
@@ -512,6 +589,10 @@ pub fn inspect(policy: &Policy, listen_port: u16) -> Res<Receipt> {
     }
     let mut kernel = crate::network_runtime::LinuxKernel::new()?;
     let live = kernel.snapshot(policy)?;
+    let live = match evidence {
+        Some(evidence) => managed_baseline(policy, &live, evidence)?,
+        None => live,
+    };
     let mut receipt = verify(&saved, policy, &live, &key, listen_port, true)?;
     receipt.unit_sha256 = Some(
         Sha256::digest(&unit_bytes)
@@ -526,4 +607,97 @@ pub fn inspect(policy: &Policy, listen_port: u16) -> Res<Receipt> {
         return Err("provider_config_changed_during_inspection".into());
     }
     Ok(receipt)
+}
+
+#[cfg(test)]
+mod managed_tests {
+    use super::*;
+    fn key(c: char) -> String {
+        format!("{}AAA=", c.to_string().repeat(40))
+    }
+    fn fixture() -> (Policy, Snapshot, serde_json::Value) {
+        let policy = Policy {
+            schema: 1,
+            uid: 1000,
+            interface: "readb0".into(),
+            server_key: key('E'),
+            server_address: "10.88.0.1".parse().unwrap(),
+            prefix: 24,
+            first: "10.88.0.100".parse().unwrap(),
+            last: "10.88.0.110".parse().unwrap(),
+        };
+        let baseline = Snapshot {
+            server_key: key('E'),
+            addresses: vec!["10.88.0.1/24".into()],
+            peers: BTreeMap::from([(key('D'), vec!["10.88.0.5/32".into()])]),
+        };
+        let mut live = baseline.clone();
+        live.peers.insert(key('C'), vec!["10.88.0.100/32".into()]);
+        let digest: String = Sha256::digest(serde_json::to_vec(&policy).unwrap())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        let evidence = serde_json::json!({"schema":1,"policy_sha256":digest,"external_baseline":baseline,"devices":{"phone":{"key":key('C'),"address":"10.88.0.100"}}});
+        (policy, live, evidence)
+    }
+    #[test]
+    fn managed_evidence_requires_exact_policy_and_complete_current_snapshot() {
+        let (p, live, evidence) = fixture();
+        let baseline = managed_baseline(&p, &live, &evidence).unwrap();
+        assert_eq!(baseline.peers.len(), 1);
+        assert!(baseline.peers.contains_key(&key('D')));
+        let saved = Saved::parse(format!("[Interface]\nPrivateKey={}\nAddress=10.88.0.1/24\nListenPort=51820\n[Peer]\nPublicKey={}\nAllowedIPs=10.88.0.5/32\n",key('B'),key('D')).as_bytes()).unwrap();
+        assert!(verify(&saved, &p, &baseline, &key('E'), 51820, true).is_ok());
+        assert!(verify(&saved, &p, &live, &key('E'), 51820, true).is_err());
+        let mut unknown_live = live.clone();
+        unknown_live
+            .peers
+            .insert(key('F'), vec!["10.88.0.101/32".into()]);
+        let mut unknown_evidence = evidence.clone();
+        unknown_evidence["external_baseline"]["peers"][key('F')] =
+            serde_json::json!(["10.88.0.101/32"]);
+        let external = managed_baseline(&p, &unknown_live, &unknown_evidence).unwrap();
+        assert!(external.peers.contains_key(&key('F')));
+        assert!(verify(&saved, &p, &external, &key('E'), 51820, true).is_err());
+
+        let mut bad = evidence.clone();
+        bad["policy_sha256"] = serde_json::json!("f".repeat(64));
+        assert!(managed_baseline(&p, &live, &bad).is_err());
+        let mut bad = evidence.clone();
+        bad["devices"] = serde_json::json!({});
+        assert!(managed_baseline(&p, &live, &bad).is_err());
+        let mut bad = evidence.clone();
+        bad["external_baseline"]["peers"][key('D')] = serde_json::json!(["10.88.0.6/32"]);
+        assert!(managed_baseline(&p, &live, &bad).is_err());
+        let mut changed = live.clone();
+        changed.peers.remove(&key('C'));
+        assert!(managed_baseline(&p, &changed, &evidence).is_err());
+        changed = live.clone();
+        changed
+            .peers
+            .insert(key('F'), vec!["10.88.0.101/32".into()]);
+        assert!(managed_baseline(&p, &changed, &evidence).is_err());
+        let mut bad = evidence.clone();
+        bad["devices"]["phone"]["address"] = serde_json::json!("10.88.0.102");
+        assert!(managed_baseline(&p, &live, &bad).is_err());
+    }
+    #[test]
+    fn managed_evidence_rejects_alias_overlap_unknown_shape_and_wrong_scope() {
+        let (p, live, evidence) = fixture();
+        let mut bad = evidence.clone();
+        bad["devices"]["alias"] = bad["devices"]["phone"].clone();
+        assert!(managed_baseline(&p, &live, &bad).is_err());
+        let mut bad = evidence.clone();
+        bad["external_baseline"]["peers"][key('C')] = serde_json::json!(["10.88.0.100/32"]);
+        assert!(managed_baseline(&p, &live, &bad).is_err());
+        let mut bad = evidence.clone();
+        bad["ignored"] = serde_json::json!(true);
+        assert!(managed_baseline(&p, &live, &bad).is_err());
+        let mut bad = evidence.clone();
+        bad["devices"]["phone"]["address"] = serde_json::json!("10.88.0.99");
+        assert!(managed_baseline(&p, &live, &bad).is_err());
+        let mut bad = evidence;
+        bad["schema"] = serde_json::json!(2);
+        assert!(managed_baseline(&p, &live, &bad).is_err());
+    }
 }
