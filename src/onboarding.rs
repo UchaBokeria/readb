@@ -104,6 +104,7 @@ pub struct InviteRequest {
     pub endpoint: String,
     pub report_port: Option<u16>,
     pub client_session: String,
+    pub setup_url: Option<String>,
 }
 impl InviteRequest {
     fn parse(bytes: &[u8]) -> Res<Self> {

@@ -21,7 +21,7 @@ fn registry() -> Registry {
 fn admin_issue_requires_real_broker_and_never_creates_invite_or_secret_on_missing_capability() {
     let r = registry();
     let before = fs::read_dir(&r.root).unwrap().count();
-    let body = serde_json::json!({"name":"Pixel","kind":"phone","endpoint":"vpn.example.org:51820","client_session":"public-browser-session"});
+    let body = serde_json::json!({"name":"Pixel","kind":"phone","endpoint":"vpn.example.org:51820","client_session":"public-browser-session","setup_url":"https://readb.uchabokeria.space"});
     let response = admin_issue(&r, &serde_json::to_vec(&body).unwrap());
     assert_eq!(response.status, 503);
     assert_eq!(response.value["blocker"], "report_firewall_setup_required");
