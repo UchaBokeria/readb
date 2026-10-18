@@ -206,3 +206,13 @@ dropping and rebinding it. Its ordinary `start` wrapper preserves existing
 behavior. Three reservation tests plus both owned-server tests and all-target
 Clippy pass. This primitive is not yet connected to enrollment/daemon listener
 admission; it does not make a profile ready or change any live port.
+
+Internal ticket source slice: a pending device can receive only its journal's
+original-owner internal controller lease. Root scoped-helper health/fence and
+exact current catalog hash are checked first. Same-owner idle leases are reused;
+safe expired idle leases can be rebound. Other owners, active work, persisted
+unknown operations, another state root and root fences refuse without cancellation.
+Ticket publication errors retain the lease for exact recovery. Public ADB/jobs,
+views and reports remain blocked even with that ticket. Targeted53 journal,
+backend, registry and network-controller checks pass, plus all-target Clippy.
+Typed network execution and actual catalog publication are still not wired.

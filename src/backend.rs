@@ -450,6 +450,50 @@ impl Backend {
         }
         Ok(())
     }
+    pub(crate) fn claim_enrollment(
+        &self,
+        record: &crate::enrollment_journal::Record,
+    ) -> Res<String> {
+        let _transport = self.transport.lock().unwrap();
+        if crate::enrollment_journal::barrier(&self.config.dir)?.as_deref()
+            != Some(record.transaction())
+        {
+            return Err("enrollment_barrier_changed".into());
+        }
+        let mut state = self.state.lock().unwrap();
+        if state.stopping
+            || state.maintenance
+            || state.enrollment.as_deref() != Some(record.transaction())
+            || !matches!(
+                record.phase(),
+                crate::enrollment_journal::Phase::CatalogAdded
+                    | crate::enrollment_journal::Phase::ControllerHeld
+            )
+        {
+            return Err("enrollment_internal_claim_not_admitted".into());
+        }
+        state.gate.expire(lease_now());
+        if state.gate.cleanup_unknown.is_some() {
+            return Err("enrollment_cleanup_unknown: inspect device work before recovery".into());
+        }
+        if state.gate.active || !state.operations.is_empty() || !state.viewers.is_empty() {
+            return Err("enrollment_device_busy: existing work was not cancelled".into());
+        }
+        if let Some(lease) = &state.gate.lease {
+            if serde_json::to_value(&lease.owner).map_err(|_| "enrollment_owner_invalid")?
+                != serde_json::to_value(record.owner()).map_err(|_| "enrollment_owner_invalid")?
+            {
+                return Err(format!(
+                    "enrollment_device_busy: {} on {} is running {:?}; no job was cancelled",
+                    lease.owner.agent, lease.owner.origin, lease.owner.job
+                ));
+            }
+            let token = lease.token.clone();
+            state.gate.heartbeat(&token, lease_now())?;
+            return Ok(token);
+        }
+        state.gate.claim(record.owner().clone(), lease_now(), 90)
+    }
     pub fn claim(&self, o: Owner, ttl: u64) -> Res<String> {
         let _maintenance = self.transport.lock().unwrap();
         let mut s = self.state.lock().unwrap();

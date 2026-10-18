@@ -52,6 +52,7 @@ pub enum Phase {
     Prepared,
     CatalogIntent,
     CatalogAdded,
+    ControllerHeld,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -64,6 +65,8 @@ struct StoredRecord {
     material_hash: String,
     expected_config: String,
     catalog_after: Option<String>,
+    #[serde(default)]
+    ticket: Option<String>,
 }
 impl StoredRecord {
     fn validate(&self) -> Res<()> {
@@ -89,10 +92,15 @@ impl StoredRecord {
         } else if !self.catalog_after.as_ref().is_some_and(|s| hash_valid(s)) {
             return Err("enrollment_catalog_intent_missing".into());
         }
-        if self.phase == Phase::CatalogAdded
+        if matches!(self.phase, Phase::CatalogAdded | Phase::ControllerHeld)
             && self.catalog_after.as_ref() != Some(&self.expected_config)
         {
             return Err("enrollment_catalog_phase_invalid".into());
+        }
+        if (self.phase == Phase::ControllerHeld) != self.ticket.is_some()
+            || self.ticket.as_ref().is_some_and(|t| !hash_valid(t))
+        {
+            return Err("enrollment_ticket_phase_invalid".into());
         }
         Ok(())
     }
@@ -129,6 +137,12 @@ impl Record {
     }
     pub fn reservation(&self) -> Res<Reservation> {
         Ok(self.stored.material()?.plan().reservation())
+    }
+    pub(crate) fn owner(&self) -> &Owner {
+        &self.stored.owner
+    }
+    pub(crate) fn ticket(&self) -> Option<&str> {
+        self.stored.ticket.as_deref()
     }
     pub fn expected_config(&self) -> &str {
         &self.stored.expected_config
@@ -383,6 +397,41 @@ impl Store {
         unsafe { libc::unlinkat(self.dir.as_raw_fd(), name.as_ptr(), 0) };
         result
     }
+    pub(crate) fn bound_to(&self, root: &Path) -> Res<()> {
+        let other = directory(root, false)?.ok_or("enrollment_state_binding_missing")?;
+        let a = self
+            .dir
+            .metadata()
+            .map_err(|_| "enrollment_metadata_failed")?;
+        let b = other.metadata().map_err(|_| "enrollment_metadata_failed")?;
+        if a.dev() != b.dev() || a.ino() != b.ino() {
+            return Err("enrollment_owned_by_other_state".into());
+        }
+        Ok(())
+    }
+    pub(crate) fn bind_ticket(
+        &mut self,
+        id: &str,
+        transaction: &str,
+        owner: &Owner,
+        previous: Option<&str>,
+        ticket: &str,
+    ) -> Res<()> {
+        if !hash_valid(ticket) {
+            return Err("enrollment_ticket_invalid".into());
+        }
+        let mut journal = self.load()?;
+        let record = journal.records.get_mut(id).ok_or("enrollment_not_found")?;
+        record.authorize(transaction, owner)?;
+        if !matches!(record.phase, Phase::CatalogAdded | Phase::ControllerHeld)
+            || record.ticket.as_deref() != previous
+        {
+            return Err("enrollment_ticket_transition_changed".into());
+        }
+        record.ticket = Some(ticket.to_string());
+        record.phase = Phase::ControllerHeld;
+        self.publish(&journal)
+    }
     pub fn begin(&mut self, m: Material, owner: &Owner) -> Res<Record> {
         if !owner_valid(owner) {
             return Err("enrollment_owner_invalid".into());
@@ -404,6 +453,7 @@ impl Store {
             material: b,
             expected_config: m.plan().config_fingerprint.clone(),
             catalog_after: None,
+            ticket: None,
         };
         r.validate()?;
         j.records.insert(m.plan().id.clone(), r.clone());

@@ -123,6 +123,39 @@ impl Registry {
         }
         Ok(())
     }
+    /// Server-side enrollment recovery only. Root metadata must come through the
+    /// existing authenticated helper client; a pending ticket grants no ADB work.
+    pub fn claim_enrollment(
+        &self,
+        store: &mut crate::enrollment_journal::Store,
+        id: &str,
+        owner: &crate::policy::Owner,
+        root_status: impl FnOnce() -> Res<Value>,
+    ) -> Res<String> {
+        store.bound_to(&self.root)?;
+        let record = store.recover(id, owner)?;
+        let status = root_status()?;
+        if status["fenced"] != false || status["scoped_controller"] != true {
+            return Err("enrollment_root_not_ready: inspect root fence or upgrade helper".into());
+        }
+        let catalog = self.catalog.lock().unwrap();
+        if self.closing.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err("coordinator_shutdown".into());
+        }
+        self.catalog_store.preflight()?;
+        if fingerprint(&catalog.config)? != record.expected_config() {
+            return Err("enrollment_catalog_changed: inspect original pending transaction".into());
+        }
+        let backend = catalog
+            .devices
+            .get(id)
+            .ok_or("enrollment_device_not_published")?;
+        let ticket = backend.claim_enrollment(&record)?;
+        // A publication failure keeps the live lease; recovery reuses that exact
+        // same-owner idle lease or waits for safe expiry. Never cancel or steal.
+        store.bind_ticket(id, record.transaction(), owner, record.ticket(), &ticket)?;
+        Ok(ticket)
+    }
     pub fn config_fingerprint(&self) -> Res<String> {
         fingerprint(&self.catalog.lock().unwrap().config)
     }

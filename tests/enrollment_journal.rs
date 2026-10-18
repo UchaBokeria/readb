@@ -248,3 +248,123 @@ fn pending_device_startup_and_cached_backends_refuse_every_ordinary_entry() {
     assert!(readb::registry::Registry::new(registry.config(), p.clone()).is_err());
     fs::remove_dir_all(p).unwrap();
 }
+#[test]
+fn internal_claim_retains_barrier_and_recovers_only_original_owner_without_stealing() {
+    let p = dir();
+    let mut store = Store::open(&p, "/usr/bin/wg".as_ref()).unwrap();
+    let first = store.begin(material(), &owner()).unwrap();
+    let next = store
+        .prepare_catalog("pixel-readb", first.transaction(), &owner(), &config())
+        .unwrap();
+    store
+        .confirm_catalog("pixel-readb", first.transaction(), &owner(), &next)
+        .unwrap();
+    let registry = readb::registry::Registry::new(next, p.clone()).unwrap();
+    let healthy = || Ok(serde_json::json!({"fenced":false,"scoped_controller":true}));
+    assert!(
+        registry
+            .claim_enrollment(&mut store, "pixel-readb", &owner(), || Ok(
+                serde_json::json!({"fenced":true,"scoped_controller":true})
+            ))
+            .is_err()
+    );
+    let ticket = registry
+        .claim_enrollment(&mut store, "pixel-readb", &owner(), healthy)
+        .unwrap();
+    assert_eq!(
+        registry
+            .claim_enrollment(&mut store, "pixel-readb", &owner(), healthy)
+            .unwrap(),
+        ticket
+    );
+    let pending = registry.device("pixel-readb").unwrap();
+    assert!(pending.claim(owner(), 90).is_err());
+    assert!(pending.prepare(&ticket, vec!["devices".into()]).is_err());
+    let mut wrong = owner();
+    wrong.session = "wrong-session".into();
+    assert!(
+        registry
+            .claim_enrollment(&mut store, "pixel-readb", &wrong, healthy)
+            .is_err()
+    );
+    // No automatic cancellation of unrelated busy work, even if catalog owner matches.
+    {
+        let mut state = pending.state.lock().unwrap();
+        state
+            .gate
+            .release(&ticket, readb::backend::lease_now())
+            .unwrap();
+        state
+            .gate
+            .claim(wrong, readb::backend::lease_now(), 90)
+            .unwrap();
+    }
+    assert!(
+        registry
+            .claim_enrollment(&mut store, "pixel-readb", &owner(), healthy)
+            .unwrap_err()
+            .contains("busy")
+    );
+    drop(store);
+    fs::remove_dir_all(p).unwrap();
+}
+#[test]
+fn expired_idle_ticket_can_rebind_but_persisted_unknown_work_and_other_state_cannot() {
+    let p = dir();
+    let mut store = Store::open(&p, "/usr/bin/wg".as_ref()).unwrap();
+    let first = store.begin(material(), &owner()).unwrap();
+    let next = store
+        .prepare_catalog("pixel-readb", first.transaction(), &owner(), &config())
+        .unwrap();
+    store
+        .confirm_catalog("pixel-readb", first.transaction(), &owner(), &next)
+        .unwrap();
+    let registry = readb::registry::Registry::new(next.clone(), p.clone()).unwrap();
+    let healthy = || Ok(serde_json::json!({"fenced":false,"scoped_controller":true}));
+    let before = registry
+        .claim_enrollment(&mut store, "pixel-readb", &owner(), healthy)
+        .unwrap();
+    let pending = registry.device("pixel-readb").unwrap();
+    pending
+        .state
+        .lock()
+        .unwrap()
+        .gate
+        .lease
+        .as_mut()
+        .unwrap()
+        .expires = readb::backend::lease_now() - 1.;
+    let after = registry
+        .claim_enrollment(&mut store, "pixel-readb", &owner(), healthy)
+        .unwrap();
+    assert_ne!(before, after);
+    assert!(pending.prepare(&after, vec!["devices".into()]).is_err());
+    let other = dir();
+    let mut foreign = Store::open(&other, "/usr/bin/wg".as_ref()).unwrap();
+    assert!(
+        registry
+            .claim_enrollment(&mut foreign, "pixel-readb", &owner(), healthy)
+            .unwrap_err()
+            .contains("other_state")
+    );
+    drop(foreign);
+    fs::remove_dir_all(other).unwrap();
+    // A new daemon cannot treat a leftover durable operation as an expired idle job.
+    fs::write(pending.config.dir.join("active-operation.json"), b"{}").unwrap();
+    fs::set_permissions(
+        pending.config.dir.join("active-operation.json"),
+        fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
+    drop(registry);
+    drop(pending);
+    let restarted = readb::registry::Registry::new(next, p.clone()).unwrap();
+    assert!(
+        restarted
+            .claim_enrollment(&mut store, "pixel-readb", &owner(), healthy)
+            .unwrap_err()
+            .contains("cleanup_unknown")
+    );
+    drop(store);
+    fs::remove_dir_all(p).unwrap();
+}
