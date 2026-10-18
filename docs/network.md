@@ -111,3 +111,9 @@ blocks both helper startup and binary installation under their shared lock.
 Recovery accepts only the recorded absent/exact file and before/after receipt;
 external edits and root coordinator accounts are refused. It never starts a unit
 or changes a peer. Setup CLI composition remains pending.
+
+Development safety boundary (October18): direct non-root `network enroll`, `rm`
+and `reconcile` requests now refuse with `network_controller_proxy_required`.
+A matching UID is not a device controller lease. Root maintenance and status are
+unchanged. Job-scoped coordinator integration is the next step; this is not yet
+replacement enrollment acceptance. Keep existing device services running.

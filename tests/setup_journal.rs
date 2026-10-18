@@ -67,3 +67,26 @@ fn symlinks_untrusted_modes_and_invalid_state_fail_closed() {
     fs::remove_dir_all(p).unwrap();
     fs::remove_dir_all(other).unwrap();
 }
+
+#[test]
+fn original_provider_evidence_is_pinned_across_recovery() {
+    let p = dir();
+    let plan = "a".repeat(64);
+    let original = "b".repeat(64);
+    let changed = "c".repeat(64);
+    {
+        let mut j = Journal::open(&p, &plan).unwrap();
+        j.bind_provider(&original).unwrap();
+        j.bind_provider(&original).unwrap();
+        j.begin(Phase::Preflight).unwrap();
+    }
+    let mut j = Journal::open(&p, &plan).unwrap();
+    assert!(
+        j.bind_provider(&changed)
+            .unwrap_err()
+            .contains("provider_changed")
+    );
+    j.bind_provider(&original).unwrap();
+    drop(j);
+    fs::remove_dir_all(p).unwrap();
+}

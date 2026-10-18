@@ -121,3 +121,20 @@ Post-activation code can inspect exact root policy/unit/release/receipts without
 acquiring the running helper's exclusive state lock. This inspector writes nothing,
 rejects pending intents and proves files only. It does not prove unit/process or
 network health; full activation orchestration remains pending.
+
+## Existing-interface activation (development)
+
+`setup provider` checks saved WireGuard identity, peers and boot persistence.
+It reads only. `setup apply --user USER --reuse-interface ...` then installs and
+starts the narrow root helper and the selected user's empty coordinator.
+It never restarts the VPN or enrolls a device. Web stays off.
+
+The journal pins the binary, destination, user and original network evidence.
+Every service action has an intent and an observed result. After interruption,
+use the same command with `--recover`; changed files or network evidence block it.
+An existing managed user release can upgrade only while its service is stopped.
+Unknown installs stay untouched. Devices still need separate migration acceptance.
+
+This adapter requires systemd, an enabled wg-quick provider and existing tools.
+Fresh network creation, missing-tool installation and other init adapters remain
+unfinished. Do not retire old device services after an empty-registry setup.

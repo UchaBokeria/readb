@@ -1,6 +1,6 @@
 use crate::policy::Res;
 use std::{
-    io::Read,
+    io::{Read, Write},
     os::unix::process::CommandExt,
     process::{Child, Command, Stdio},
     sync::mpsc,
@@ -42,13 +42,45 @@ pub fn capture(program: &str, args: &[String], timeout: Duration, limit: usize) 
     capture_cmd(c, timeout, limit)
 }
 pub fn capture_cmd(mut command: Command, timeout: Duration, limit: usize) -> Res<Captured> {
-    let mut child = command
+    let child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .process_group(0)
         .spawn()
         .map_err(|e| format!("command_spawn_failed: errno={:?}", e.raw_os_error()))?;
+    capture_child(child, timeout, limit)
+}
+/// Linux's empty pipe admits at most PIPE_BUF bytes without waiting for a reader.
+/// Keep secrets out of argv and close stdin before bounded output collection.
+pub fn capture_cmd_input(
+    mut command: Command,
+    input: &[u8],
+    timeout: Duration,
+    limit: usize,
+) -> Res<Captured> {
+    if input.len() > 4096 {
+        return Err("command_private_input_too_large".into());
+    }
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0)
+        .spawn()
+        .map_err(|e| format!("command_spawn_failed: errno={:?}", e.raw_os_error()))?;
+    let write = child.stdin.take().unwrap().write_all(input);
+    if write.is_err() {
+        return Err(if kill_wait(&mut child) {
+            "command_private_input_failed"
+        } else {
+            "local_cleanup_unknown"
+        }
+        .into());
+    }
+    capture_child(child, timeout, limit)
+}
+fn capture_child(mut child: Child, timeout: Duration, limit: usize) -> Res<Captured> {
     let out = reader(child.stdout.take().unwrap(), limit);
     let err = reader(child.stderr.take().unwrap(), limit);
     let started = Instant::now();

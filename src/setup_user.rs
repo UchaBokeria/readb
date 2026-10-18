@@ -170,10 +170,17 @@ fn run_image(owner: &Owner, args: &[String], extra: &[(&str, &str)]) -> Res<Capt
     runner::capture_cmd(command, Duration::from_secs(120), 1024 * 1024)
 }
 pub fn install_for(owner: &Owner, prefix: &Path) -> Res<serde_json::Value> {
+    install_for_recover(owner, prefix, false)
+}
+pub(crate) fn install_for_recover(
+    owner: &Owner,
+    prefix: &Path,
+    recover: bool,
+) -> Res<serde_json::Value> {
     if !prefix.is_absolute() {
         return Err("setup_user_absolute_prefix_required".into());
     }
-    let args = vec![
+    let mut args = vec![
         "install".into(),
         "--server".into(),
         "--prefix".into(),
@@ -182,6 +189,9 @@ pub fn install_for(owner: &Owner, prefix: &Path) -> Res<serde_json::Value> {
             .ok_or("setup_user_prefix_utf8_required")?
             .into(),
     ];
+    if recover {
+        args.push("--recover".into());
+    }
     let result = run_image(owner, &args, &[]).map_err(|e| {
         format!("setup_user_install_unconfirmed: {e}; inspect selected-user files before retry")
     })?;
@@ -201,6 +211,17 @@ pub fn install_for(owner: &Owner, prefix: &Path) -> Res<serde_json::Value> {
     Ok(
         serde_json::json!({"user_files_installed":true,"owner":owner.name,"uid":owner.uid,"coordinator_active":false,"devices_accepted":false,"details":output}),
     )
+}
+
+pub(crate) fn value_for(owner: &Owner, args: &[String]) -> Res<serde_json::Value> {
+    let r = run_image(owner, args, &[])?;
+    if !r.ok {
+        return Err(format!(
+            "setup_selected_user_command_failed: exit={}; inspect the selected-user journal or unit before retry",
+            r.code
+        ));
+    }
+    serde_json::from_slice(&r.out).map_err(|_| "setup_selected_user_reply_invalid".into())
 }
 
 #[cfg(test)]

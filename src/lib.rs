@@ -52,3 +52,9 @@ pub mod user_install;
 pub mod network_recovery;
 
 pub mod route_events;
+
+pub mod setup_provider;
+
+pub mod setup_activation;
+
+pub mod setup_systemd;

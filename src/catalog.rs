@@ -629,7 +629,23 @@ mod tests {
             assert!(store.fenced());
             drop(store);
             assert!(Store::new(&root, &cfg).fenced());
-            let proof = recover(&root, &cfg).unwrap();
+            // Parallel tests fork sealed runner children. Until exec closes
+            // CLOEXEC descriptors, a child can retain our just-released flock.
+            // Production correctly refuses that busy state. Wait only for this
+            // exact transient admission error; never hide recovery/fence errors.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+            let proof = loop {
+                match recover(&root, &cfg) {
+                    Ok(proof) => break proof,
+                    Err(e)
+                        if e == "catalog_busy: stop the coordinator before offline recovery"
+                            && std::time::Instant::now() < deadline =>
+                    {
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    }
+                    Err(e) => panic!("recovery failed: {e}"),
+                }
+            };
             assert_eq!(proof["committed"], failure != "before_publish");
             assert!(!Store::new(&root, &cfg).fenced());
             fs::remove_dir_all(root).unwrap();

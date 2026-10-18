@@ -75,3 +75,32 @@ pub fn recover(image: &Path, plan: &ApplyPlan, binary: &[u8]) -> Res<Value> {
     }
     Ok(result(plan))
 }
+
+/// Reconcile the phase record after exact files were published. This must not
+/// take Installer's lock: the activated helper may already own it.
+pub fn reconcile_installed(
+    image: &Path,
+    plan: &ApplyPlan,
+    binary: &[u8],
+    recover: bool,
+) -> Res<()> {
+    plan.validate(binary)?;
+    crate::network_install::inspect_setup_files(image, &plan.policy, &plan.root_install)?;
+    let path = setup_journal_directory(image)?;
+    let mut j = Journal::open(&path, &plan.plan_sha256)?;
+    for phase in [Phase::Preflight, Phase::Dependencies, Phase::Network] {
+        if j.completed(phase) {
+            continue;
+        }
+        if j.running() == Some(phase) {
+            if !recover {
+                return Err("setup_cleanup_unknown: explicit files recovery required".into());
+            }
+            j.reconcile_verified(phase)?;
+        } else {
+            j.begin(phase)?;
+            j.complete(phase)?;
+        }
+    }
+    Ok(())
+}

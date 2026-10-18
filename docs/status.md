@@ -180,3 +180,19 @@ other spawn errors and the executed test's failures are never retried. A control
 inherited-writer probe reproduced the OS mechanism; the original racing child was
 not captured.12 parallel seven-case service cycles and fresh full194host+194musl,
 Clippy/fmt pass. This changes the fixture only, not installer retry semantics.
+
+October18 setup activation source: bounded private-stdin key derivation, strict
+read-only wg-quick persistence checks, durable root/user action recovery and
+receipt-backed user-install inspection/upgrade. Real Blackwall provider inspection
+passed without changing its three peers. Interrupted root-file completion, provider
+drift and user-file recovery are fenced. Actual replacement service/companion
+cutover is still pending; retain legacy services. Non-root raw network writes now
+refuse with controller-proxy-required until job-scoped integration is complete.
+
+October18 existing-interface systemd staging passed on the real server. Root
+helper and empty user coordinator are active; boot persistence and unchanged
+preexisting WireGuard peers were verified. Fixed readiness to query `doctor`,
+not the shorter `ps` response.217 host and217 Rust1.88/musl workspace tests plus
+Clippy/fmt pass. A failed initial empty staging journal was retained separately;
+no device, key or previous service was removed. This is setup acceptance only:
+companion enrollment, encrypted handover and per-device cutover remain open.

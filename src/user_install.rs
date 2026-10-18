@@ -522,6 +522,80 @@ impl Transaction {
         )
     }
 }
+/// Read only the current install proof. Config/completions may legitimately
+/// change later; the caller selects the immutable executable/unit/link core.
+pub fn inspect(root: &Path, binding: &str, expected: &[Desired]) -> Res<serde_json::Value> {
+    ancestors(root, false)?;
+    let lock = match OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(root)
+    {
+        Ok(f) => Some(f),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(_) => return Err("install_inspection_directory_unsafe".into()),
+    };
+    if let Some(f) = &lock {
+        let m = f
+            .metadata()
+            .map_err(|_| "install_inspection_directory_unavailable")?;
+        if m.uid() != unsafe { libc::geteuid() } || m.mode() & 0o077 != 0 {
+            return Err("install_inspection_private_directory_required".into());
+        }
+        if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) } != 0 {
+            return Err("install_busy".into());
+        }
+    }
+    if let Some(raw) = read(&root.join("pending.json"), 1024 * 1024)? {
+        let intent = decode(&raw)?;
+        if intent.binding != binding {
+            return Err("install_inspection_pending_scope_mismatch".into());
+        }
+        return Ok(
+            serde_json::json!({"state":"pending","pending_bound":true,"fingerprint":hash(&raw)}),
+        );
+    }
+    let mut present = 0;
+    for item in expected {
+        if let Some(mark) = observe(&item.path)? {
+            present += 1;
+            if mark != item.mark()? {
+                return Err("install_inspection_owned_artifact_changed".into());
+            }
+        }
+    }
+    let state = if present == 0 {
+        "absent"
+    } else if present == expected.len() {
+        let raw = read(&root.join("receipt.json"), 1024 * 1024)?
+            .ok_or("install_inspection_receipt_required")?;
+        let receipt = decode(&raw)?;
+        if receipt.binding != binding {
+            return Err("install_inspection_receipt_scope_mismatch".into());
+        }
+        for item in expected {
+            let wanted = item.mark()?;
+            if !receipt
+                .items
+                .iter()
+                .any(|r| r.path == item.path && r.after == wanted)
+            {
+                return Err("install_inspection_receipt_artifact_mismatch".into());
+            }
+        }
+        "ready"
+    } else {
+        return Err("install_inspection_partial_without_journal".into());
+    };
+    Ok(
+        serde_json::json!({"state":state,"pending_bound":false,"fingerprint":hash(format!("{binding}:{state}").as_bytes())}),
+    )
+}
+pub(crate) fn read_owned(path: &Path, limit: u64) -> Res<Option<Vec<u8>>> {
+    ancestors(path.parent().ok_or("install_parent_missing")?, false)?;
+    read(path, limit)
+}
+
 #[cfg(test)]
 mod failure_tests {
     use super::*;

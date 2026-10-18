@@ -42,6 +42,10 @@ struct State {
     plan_sha256: String,
     completed: Vec<Phase>,
     running: Option<Phase>,
+    #[serde(default)]
+    activation: crate::setup_activation::Progress,
+    #[serde(default)]
+    provider_sha256: Option<String>,
 }
 pub struct Journal {
     dir: File,
@@ -116,6 +120,8 @@ impl Journal {
                 plan_sha256: plan_sha256.into(),
                 completed: vec![],
                 running: None,
+                activation: Default::default(),
+                provider_sha256: None,
             }
         } else {
             let f = unsafe { File::from_raw_fd(fd) };
@@ -142,6 +148,14 @@ impl Journal {
                     .is_some_and(|p| PHASES.get(state.completed.len()) != Some(&p))
             {
                 return Err("invalid_setup_journal".into());
+            }
+            state.activation.validate()?;
+            if state
+                .provider_sha256
+                .as_ref()
+                .is_some_and(|s| !hash_valid(s))
+            {
+                return Err("invalid_setup_provider_pin".into());
             }
             if state.plan_sha256 != plan_sha256 {
                 return Err(
@@ -202,8 +216,75 @@ impl Journal {
         }
         result
     }
+    pub(crate) fn activation_progress(&self) -> crate::setup_activation::Progress {
+        self.state.activation.clone()
+    }
+    pub(crate) fn save_activation(
+        &mut self,
+        progress: crate::setup_activation::Progress,
+    ) -> Res<()> {
+        progress.validate()?;
+        if self.state.running != Some(Phase::Coordinator)
+            || self.admitted != Some(Phase::Coordinator)
+        {
+            return Err("setup_activation_phase_not_admitted".into());
+        }
+        self.state.activation = progress;
+        self.save()
+    }
+    pub(crate) fn admit_activation(&mut self, recover: bool) -> Res<()> {
+        if self.completed(Phase::Coordinator) {
+            if !self.state.activation.complete() {
+                return Err("setup_activation_phase_record_inconsistent".into());
+            }
+            return Ok(());
+        }
+        if self.state.running == Some(Phase::Coordinator) {
+            if !recover {
+                return Err("setup_activation_cleanup_unknown: explicit recovery required".into());
+            }
+            self.admitted = Some(Phase::Coordinator);
+            return Ok(());
+        }
+        self.begin(Phase::Coordinator)
+    }
+    pub(crate) fn admit_persistence(&mut self, recover: bool) -> Res<()> {
+        if self.state.running == Some(Phase::Persistence) {
+            if !recover {
+                return Err("setup_persistence_cleanup_unknown: explicit recovery required".into());
+            }
+            self.admitted = Some(Phase::Persistence);
+            return Ok(());
+        }
+        self.begin(Phase::Persistence)
+    }
     pub fn running(&self) -> Option<Phase> {
         self.state.running
+    }
+    /// Bind observed persistence and unrelated peers before activation effects.
+    /// A missing legacy pin is not evidence for an already-started activation.
+    pub fn bind_provider(&mut self, fingerprint: &str) -> Res<()> {
+        if !hash_valid(fingerprint) {
+            return Err("invalid_setup_provider_pin".into());
+        }
+        if let Some(saved) = &self.state.provider_sha256 {
+            if saved != fingerprint {
+                return Err("setup_provider_changed: preserve original network evidence".into());
+            }
+            return Ok(());
+        }
+        if self.completed(Phase::Coordinator)
+            || matches!(
+                self.running(),
+                Some(
+                    Phase::Coordinator | Phase::Persistence | Phase::Enrollment | Phase::Acceptance
+                )
+            )
+        {
+            return Err("setup_provider_pin_missing: prior activation cannot be adopted".into());
+        }
+        self.state.provider_sha256 = Some(fingerprint.into());
+        self.save()
     }
     /// Only crate setup composition may reconcile. Caller first repeats real
     /// read-only admission, or verifies every journaled network file/receipt.

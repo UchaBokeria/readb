@@ -99,10 +99,22 @@ fn handle_recovery(
                 Ok(json!({"restored":true}))
             }
             Call::Reconcile => {
+                if uid != 0 {
+                    return Err(
+                        "network_controller_proxy_required: direct user mutations are disabled"
+                            .into(),
+                    );
+                }
                 m.reconcile(uid, k)?;
                 Ok(json!({"reconciled":true}))
             }
             Call::Apply { request } => {
+                if uid != 0 {
+                    return Err(
+                        "network_controller_proxy_required: direct user mutations are disabled"
+                            .into(),
+                    );
+                }
                 m.apply(uid, request, k)?;
                 Ok(json!({"applied":true}))
             }
@@ -536,5 +548,69 @@ mod recovery_status_tests {
         assert_eq!(reply["result"]["recovery"]["next_check_in_ms"], 5000);
         assert!(!manager.fenced());
         std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod controller_admission_tests {
+    use super::*;
+    struct NoKernel(usize);
+    impl Kernel for NoKernel {
+        fn snapshot(&mut self, _: &Policy) -> Res<Snapshot> {
+            self.0 += 1;
+            Err("kernel_must_not_be_reached".into())
+        }
+        fn set(&mut self, _: &Policy, _: &str, _: Option<std::net::Ipv4Addr>) -> Res<()> {
+            panic!("no write")
+        }
+    }
+    #[test]
+    fn direct_user_mutation_needs_coordinator_controller_proxy() {
+        let uid = unsafe { libc::geteuid() };
+        if uid == 0 {
+            return;
+        }
+        let root =
+            std::env::temp_dir().join(format!("readb-rpc-admission-{}", crate::policy::random()));
+        fs::create_dir(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        let policy = Policy {
+            schema: 1,
+            uid,
+            interface: "readb0".into(),
+            server_key: format!("{}AAA=", "E".repeat(40)),
+            server_address: "10.88.0.1".parse().unwrap(),
+            prefix: 24,
+            first: "10.88.0.100".parse().unwrap(),
+            last: "10.88.0.110".parse().unwrap(),
+        };
+        let mut m = Manager::open(&root, policy).unwrap();
+        let (mut client, mut server) = UnixStream::pair().unwrap();
+        client
+            .write_all(
+                &serde_json::to_vec(&Rpc {
+                    schema: 1,
+                    request: Call::Apply {
+                        request: Request::Enroll {
+                            id: "phone".into(),
+                            key: format!("{}AAA=", "D".repeat(40)),
+                            address: "10.88.0.100".parse().unwrap(),
+                        },
+                    },
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        client.write_all(b"\n").unwrap();
+        let mut k = NoKernel(0);
+        handle(&mut server, &mut m, &mut k).unwrap();
+        let value: Value =
+            serde_json::from_slice(&crate::wire::line(&mut client, 4096).unwrap()).unwrap();
+        fs::remove_dir_all(root).unwrap();
+        assert_eq!(
+            value["error"],
+            "network_controller_proxy_required: direct user mutations are disabled"
+        );
+        assert_eq!(k.0, 0);
     }
 }

@@ -110,6 +110,8 @@ enum Cmd {
         client: bool,
         #[arg(long)]
         dry_run: bool,
+        #[arg(long,conflicts_with_all=["dry_run","recover"],help="Inspect owned install proof without writing or starting services")]
+        inspect: bool,
         #[arg(long)]
         prefix: Option<PathBuf>,
         #[arg(
@@ -158,6 +160,17 @@ enum SetupCmd {
         about = "Inspect this server; print JSON plan and blockers, never change files or VPN"
     )]
     Plan(SetupOptions),
+    #[command(about = "Verify saved WireGuard and durable boot unit; never start or change VPN")]
+    Provider(SetupOptions),
+    #[command(
+        about = "Install and activate owned server units with durable recovery; never migrate devices implicitly"
+    )]
+    Apply {
+        #[command(flatten)]
+        options: SetupOptions,
+        #[arg(long)]
+        recover: bool,
+    },
     #[command(
         about = "Install journaled root policy/helper files only; never activate services or change VPN"
     )]
@@ -312,6 +325,7 @@ enum ActionCmd {
 #[derive(Subcommand)]
 enum ServiceCmd {
     Install,
+    Enable,
     Start,
     Stop,
     Restart,
@@ -418,9 +432,11 @@ fn run() -> Res<i32> {
             return Ok(0);
         }
         Cmd::Setup(cmd) => {
-            let (options, files, recover) = match cmd {
-                SetupCmd::Plan(options) => (options, false, false),
-                SetupCmd::Files { options, recover } => (options, true, *recover),
+            let (options, files, recover, provider, apply) = match cmd {
+                SetupCmd::Plan(options) => (options, false, false, false, false),
+                SetupCmd::Files { options, recover } => (options, true, *recover, false, false),
+                SetupCmd::Provider(options) => (options, false, false, true, false),
+                SetupCmd::Apply { options, recover } => (options, true, *recover, false, true),
             };
             let SetupOptions {
                 endpoint,
@@ -439,7 +455,7 @@ fn run() -> Res<i32> {
                     "setup_requires_explicit_--local_on_server; PC clients stay SSH-only".into(),
                 );
             }
-            if files {
+            if files || provider {
                 if unsafe { libc::geteuid() } != 0 {
                     return Err("setup_files_requires_root_on_server".into());
                 }
@@ -478,9 +494,9 @@ fn run() -> Res<i32> {
             } else {
                 plan
             };
-            if files && plan.facts.init != "systemd" {
+            if (files || provider) && plan.facts.init != "systemd" {
                 return Err(
-                    "setup_files_systemd_adapter_required: other init adapters are not implemented"
+                    "setup_systemd_adapter_required: other init adapters are not implemented"
                         .into(),
                 );
             }
@@ -516,7 +532,15 @@ fn run() -> Res<i32> {
                     &binary,
                     destination,
                 )?;
-                if files {
+                if apply {
+                    output(&readb::setup_systemd::apply(&bound, &binary, recover)?);
+                } else if provider {
+                    let evidence =
+                        readb::setup_provider::inspect(&bound.policy, bound.options.listen_port)?;
+                    output(
+                        &serde_json::json!({"provider":evidence,"files_installed":false,"helper_active":false,"coordinator_active":false,"devices_accepted":false}),
+                    );
+                } else if files {
                     let result = if recover {
                         readb::setup_files::recover(std::path::Path::new("/"), &bound, &binary)?
                     } else {
@@ -594,6 +618,7 @@ fn run() -> Res<i32> {
             server,
             client: client_mode,
             dry_run,
+            inspect,
             prefix,
             recover,
         } => {
@@ -605,6 +630,10 @@ fn run() -> Res<i32> {
                 .clone()
                 .unwrap_or_else(|| home.join(".local/share/readb"));
             let p = readb::service::plan(&home, &prefix, *server)?;
+            if *inspect {
+                output(&readb::service::inspect(&p, &home)?);
+                return Ok(0);
+            }
             output(&readb::service::install_recover(
                 &p, &home, *dry_run, *recover,
             )?);
@@ -618,6 +647,7 @@ fn run() -> Res<i32> {
                 return Err("run readb install --server [--prefix PATH]".into());
             }
             let action = match sub {
+                ServiceCmd::Enable => "enable",
                 ServiceCmd::Start => "start",
                 ServiceCmd::Stop => "stop",
                 ServiceCmd::Restart => "restart",

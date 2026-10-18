@@ -154,3 +154,29 @@ fn recovery_without_any_recorded_phase_does_not_install_files() {
     assert!(!root.join("etc").exists());
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn exact_installed_files_reconcile_interrupted_network_without_installer_lock() {
+    use readb::{
+        network_install::Installer,
+        setup_journal::{Journal, Phase},
+    };
+    let root = image();
+    let p = plan(b"binary");
+    apply(&root, &p, b"binary").unwrap();
+    let dir = root.join("var/lib/readb-setup");
+    let journal = dir.join("journal.json");
+    let mut state: serde_json::Value =
+        serde_json::from_slice(&fs::read(&journal).unwrap()).unwrap();
+    state["completed"] = serde_json::json!(["preflight", "dependencies"]);
+    state["running"] = serde_json::json!("network");
+    fs::write(&journal, serde_json::to_vec(&state).unwrap()).unwrap();
+    let _helper_lock = Installer::open(&root).unwrap();
+    assert!(readb::setup_files::reconcile_installed(&root, &p, b"binary", false).is_err());
+    readb::setup_files::reconcile_installed(&root, &p, b"binary", true).unwrap();
+    let j = Journal::open(&dir, &p.plan_sha256).unwrap();
+    assert!(j.completed(Phase::Network));
+    assert_eq!(j.running(), None);
+    drop(j);
+    fs::remove_dir_all(root).unwrap();
+}

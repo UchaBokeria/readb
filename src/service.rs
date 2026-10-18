@@ -11,7 +11,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
 };
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub struct InstallPlan {
     pub binary: String,
     pub link: String,
@@ -243,13 +243,7 @@ pub fn install_recover(p: &InstallPlan, home: &Path, dry_run: bool, recover: boo
         }
     }
     artifacts.push(Desired::link(link.into(), binary.into()));
-    use sha2::Digest;
-    let binding = sha2::Sha256::digest(
-        serde_json::to_vec(&(home, p)).map_err(|_| "install_plan_encoding_failed")?,
-    )
-    .iter()
-    .map(|b| format!("{b:02x}"))
-    .collect::<String>();
+    let binding = install_binding(p, home)?;
     let mut tx = Transaction::open(
         &home.join(".local/share/readb-installer"),
         &binding,
@@ -273,6 +267,86 @@ pub fn install_recover(p: &InstallPlan, home: &Path, dry_run: bool, recover: boo
     Ok(
         json!({"installed":true,"binary":p.binary,"link":p.link,"server":p.server,"state":p.state,"completions":["bash","zsh","fish"],"next":if p.server{"readb --local service start"}else{"readb context add NAME --ssh HOST --state SERVER_STATE"},"network_provisioned":false,"services_started":false,"note":"Existing devices and VPN configuration were not changed."}),
     )
+}
+
+fn install_binding(p: &InstallPlan, home: &Path) -> Res<String> {
+    use sha2::Digest;
+    Ok(sha2::Sha256::digest(
+        serde_json::to_vec(&(home, p)).map_err(|_| "install_plan_encoding_failed")?,
+    )
+    .iter()
+    .map(|b| format!("{b:02x}"))
+    .collect())
+}
+pub fn inspect(p: &InstallPlan, home: &Path) -> Res<Value> {
+    if unsafe { libc::geteuid() } == 0 {
+        return Err("user_inspection_requires_nonroot_identity".into());
+    }
+    let core_for = |p: &InstallPlan, bytes: Vec<u8>| {
+        let mut core = vec![
+            Desired::file(p.binary.clone().into(), bytes, 0o700),
+            Desired::link(p.link.clone().into(), p.binary.clone().into()),
+        ];
+        if p.server && Path::new("/run/systemd/system").is_dir() {
+            core.push(Desired::file(
+                p.unit_path.clone().into(),
+                p.unit.as_bytes().to_vec(),
+                0o600,
+            ));
+        }
+        core
+    };
+    let inspect_for = |p: &InstallPlan, bytes| {
+        crate::user_install::inspect(
+            &home.join(".local/share/readb-installer"),
+            &install_binding(p, home)?,
+            &core_for(p, bytes),
+        )
+    };
+    let status = match inspect_for(p, executing_bytes()?) {
+        Ok(status) => status,
+        Err(original) => {
+            // An upgrade is admitted only by the old exact receipt, immutable
+            // hash-named release and expected unit/link in this same namespace.
+            let target = fs::read_link(&p.link).map_err(|_| original.clone())?;
+            let namespace = Path::new(&p.binary)
+                .parent()
+                .and_then(Path::parent)
+                .ok_or("invalid_install_path")?;
+            if target == Path::new(&p.binary)
+                || !safe_path(&target)
+                || target
+                    .strip_prefix(namespace)
+                    .ok()
+                    .is_none_or(|p| p.components().count() != 2)
+                || target.file_name() != Some(std::ffi::OsStr::new("readb"))
+                || !verified_release(&target)?
+            {
+                return Err(original);
+            }
+            let mut previous = p.clone();
+            previous.binary = target.to_string_lossy().into();
+            previous.unit = p.unit.replace(&p.binary, &previous.binary);
+            let mut status = inspect_for(
+                &previous,
+                fs::read(&target).map_err(|_| "previous_release_unreadable")?,
+            )?;
+            if status["state"] != "ready" {
+                return Err(original);
+            }
+            status["state"] = json!("upgrade");
+            status
+        }
+    };
+    if p.server && status["state"] != "pending" {
+        let config = crate::user_install::read_owned(Path::new(&p.config), 1024 * 1024)?;
+        if let Some(bytes) = config {
+            crate::schema::ServerConfig::parse(&bytes)?;
+        } else if status["state"] == "ready" || status["state"] == "upgrade" {
+            return Err("install_inspection_config_required".into());
+        }
+    }
+    Ok(status)
 }
 
 pub fn manager_output(
@@ -306,6 +380,7 @@ pub fn manage(action: &str) -> Res<Value> {
         return Err("no_systemd: run foreground daemon or use your init supervisor; no PID guessing or broad kill performed".into());
     }
     match action {
+        "enable" => systemctl(&["enable", "readb.service"]),
         "start" => systemctl(&["enable", "--now", "readb.service"]),
         "stop" => systemctl(&["stop", "readb.service"]),
         "restart" => systemctl(&["restart", "readb.service"]),
@@ -315,7 +390,22 @@ pub fn manage(action: &str) -> Res<Value> {
                 &[
                     "--user",
                     "show",
+                    "--all",
                     "readb.service",
+                    "-p",
+                    "LoadState",
+                    "-p",
+                    "UnitFileState",
+                    "-p",
+                    "FragmentPath",
+                    "-p",
+                    "DropInPaths",
+                    "-p",
+                    "NeedDaemonReload",
+                    "-p",
+                    "Job",
+                    "-p",
+                    "ControlGroup",
                     "-p",
                     "ActiveState",
                     "-p",
