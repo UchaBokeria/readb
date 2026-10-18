@@ -1,7 +1,7 @@
 # Network helper
 
-Development stage. Existing-interface reuse only. No live helper installed yet.
-Fresh provisioning and actual host-boot acceptance are still pending.
+Development stage. Existing-interface root/user setup passed on a real staging
+server. Device cutover, fresh provisioning and host-boot acceptance remain open.
 
 The coordinator stays unprivileged. A separate root helper accepts typed peer
 requests on `/run/readb-network/control.sock`. It admits root or one configured
@@ -28,13 +28,15 @@ last. The enrollment range must stay within one private subnet and exclude the
 server, network and broadcast addresses. Supply the real server public key.
 No private keys belong in requests or policy.
 
-On the server, as the configured coordinator user:
+On the server, the configured coordinator user can read status. Peer writes are
+root maintenance only until controller-scoped integration is ready. Root operators
+must honor the active device job; maintenance is not a way around another owner.
 
 ```sh
 readb --local network status
-readb --local network enroll --id phone --key PUBLIC_KEY --address DEVICE_IP
-readb --local network rm phone
-readb --local network reconcile
+sudo readb --local network enroll --id phone --key PUBLIC_KEY --address DEVICE_IP
+sudo readb --local network rm phone
+sudo readb --local network reconcile
 # Root only: restore missing recorded peers
 sudo readb --local network restore
 ```

@@ -26,8 +26,9 @@ readiness. Reuse checks actual WireGuard type, server address/prefix and listene
 It never replaces existing interface keys, peers or routes.
 
 The private phase journal binds exact inputs and serializes writers. Root files
-can be installed with the command below; full service/network activation remains
-pending. Interrupted phases need explicit recovery. Keep old services until real
+can be installed separately, or activated with the existing-interface systemd
+adapter below. Fresh-server creation remains unfinished. Interrupted phases need
+explicit recovery. Keep old services until real
 replacement acceptance and rollback checks pass.
 
 PC clients keep using their SSH context. Never set up direct device transport
