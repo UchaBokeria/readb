@@ -22,20 +22,37 @@ public final class MainActivity extends Activity {
     private boolean importing;
     private boolean pageReady;
     private volatile boolean profileReady,setupSaved;
+    private volatile String savedServer="";
     private boolean setupActive;
     private String setupPhase="idle",setupMessage="";
     private long setupGeneration;
     private OnboardingClient onboarding;
+    private byte[] resetExpected;
+    private void clearReset(){if(resetExpected!=null)java.util.Arrays.fill(resetExpected,(byte)0);resetExpected=null;}
+    private void reviewSetupReset(){
+        if(setupActive||profileReady){reply("Finish or cancel setup before changing its address.");return;}
+        long generation=++setupGeneration;clearReset();
+        enrollmentWorker.execute(()->{try(dev.readb.handover.EnrollmentJournal.Session session=EnrollmentStore.get(this).session()){
+            if(session.context().length!=0)throw new java.io.IOException();final byte[] expected=session.request();
+            runOnUiThread(()->{if(destroyed||generation!=setupGeneration)return;resetExpected=expected;reply("");});
+        }catch(Exception blocked){runOnUiThread(()->{if(!destroyed&&generation==setupGeneration)reply("This setup is already bound or cannot be read. Resume it; saved data was kept.");});}});
+    }
+    private void confirmSetupReset(){
+        if(setupActive||resetExpected==null){reply("Review the saved setup before changing its address.");return;}
+        final byte[] expected=resetExpected.clone();clearReset();long generation=++setupGeneration;setupActive=true;setupPhase="archiving";setupMessage="Archiving the unfinished setup securely…";
+        enrollmentWorker.execute(()->{boolean success=false;try{EnrollmentStore.get(this).abandonBootstrap(expected);success=true;}catch(Exception preserved){}finally{java.util.Arrays.fill(expected,(byte)0);}final boolean archived=success;
+            runOnUiThread(()->{if(destroyed||generation!=setupGeneration)return;setupActive=false;setupMessage=archived?"Previous setup archived on this device. Enter the correct server address and a new code. Any old server setup is unchanged.":"Setup could not be changed. Saved data was kept; resume it or check the server.";setupPhase="paused";refreshProfile();reply("");});});reply("");
+    }
     private final ExecutorService enrollmentWorker=Executors.newSingleThreadExecutor();
-    private void refreshProfile(){worker.execute(()->{boolean ready=ProfileStore.exists(this),saved=EnrollmentStore.present(this);runOnUiThread(()->{if(destroyed)return;profileReady=ready;setupSaved=saved;reply("");});});}
+    private void refreshProfile(){worker.execute(()->{boolean ready=ProfileStore.exists(this),saved=EnrollmentStore.present(this);String origin="";if(saved)try(dev.readb.handover.EnrollmentJournal.Session session=EnrollmentStore.get(this).session()){origin=session.url();}catch(Exception ignored){}final String server=origin;runOnUiThread(()->{if(destroyed)return;profileReady=ready;setupSaved=saved;savedServer=server;reply("");});});}
     private void connectSetup(String address,String code){
         if(setupActive){reply("Setup is already running. You can cancel safely.");return;}
         if(importing||state().getBoolean("vpn_enabled",false)||state().getBoolean("report_enabled",false)){reply("Stop the private link before setting up a device.");return;}
-        long generation=++setupGeneration;setupActive=true;
+        long generation=++setupGeneration;clearReset();setupActive=true;
         onboarding=new OnboardingClient(this,(phase,message,active)->runOnUiThread(()->{if(destroyed||generation!=setupGeneration)return;setupPhase=phase;setupMessage=message;setupActive=active;if(!active)refreshProfile();reply("");}));
         OnboardingClient client=onboarding;enrollmentWorker.execute(()->client.run(address,code));reply("");
     }
-    private void cancelSetup(){++setupGeneration;if(onboarding!=null)onboarding.cancel();setupActive=false;setupPhase="paused";setupMessage="Setup paused. Saved data was kept. Resume when ready.";refreshProfile();reply("");}
+    private void cancelSetup(){if("archiving".equals(setupPhase)&&setupActive){reply("Finishing the local archive safely. Please wait.");return;}++setupGeneration;if(onboarding!=null)onboarding.cancel();setupActive=false;setupPhase="paused";setupMessage="Setup paused. Saved data was kept. Resume when ready.";refreshProfile();reply("");}
     private android.content.SharedPreferences state() { return createDeviceProtectedStorageContext().getSharedPreferences("status",0); }
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
@@ -81,7 +98,7 @@ public final class MainActivity extends Activity {
                 .put("wireless_debugging",wireless==null?JSONObject.NULL:wireless)
                 .put("remote_port",remotePort==null?JSONObject.NULL:remotePort)
                 .put("port_observed_epoch",remotePort==null?0:debug.observedEpoch());
-            response.put("setup_active",setupActive).put("setup_saved",setupSaved).put("setup_phase",setupPhase).put("setup_message",setupMessage);
+            response.put("setup_reset_review",resetExpected!=null).put("setup_server",savedServer).put("setup_active",setupActive).put("setup_saved",setupSaved).put("setup_phase",setupPhase).put("setup_message",setupMessage);
             response.put("enrolled",profileReady).put("vpn_enabled",state().getBoolean("vpn_enabled",false)).put("vpn_active",state().getBoolean("vpn_active",false))
                 .put("report_enabled",state().getBoolean("report_enabled",false)).put("report_message",state().getString("report_message","Not started"))
                 .put("vpn_message",state().getString("vpn_message","Not started")).put("last_report_epoch",state().getLong("last_report_epoch",0))
@@ -144,6 +161,9 @@ public final class MainActivity extends Activity {
                         case "setup_connect":connectSetup(r.getString("server"),r.getString("code"));break;
                         case "setup_resume":connectSetup(null,null);break;
                         case "setup_cancel":cancelSetup();break;
+                        case "setup_reset_review":reviewSetupReset();break;
+                        case "setup_reset_confirm":confirmSetupReset();break;
+                        case "setup_reset_cancel":clearReset();reply("");break;
                         case "import":
                             if(setupActive||setupSaved){reply("A saved device setup is present. Resume it; existing data was kept.");break;}
                             if(state().getBoolean("vpn_enabled",false)||state().getBoolean("report_enabled",false)){reply("Stop the private link before changing its profile.");break;}
@@ -190,5 +210,5 @@ public final class MainActivity extends Activity {
     @Override public void onRequestPermissionsResult(int request,String[] permissions,int[] results){super.onRequestPermissionsResult(request,permissions,results);if(request==ACCESS_RUNTIME)advanceAccess();else reply("");}
     @Override protected void onStart(){super.onStart();if(debug!=null){debug.start();refreshProfile();reply("");}}
     @Override protected void onStop(){if(debug!=null)debug.stop();super.onStop();}
-    @Override protected void onDestroy() { destroyed=true;++setupGeneration;if(onboarding!=null)onboarding.cancel();enrollmentWorker.shutdownNow();worker.shutdownNow();if(web!=null){web.removeJavascriptInterface("Readb");web.destroy();}super.onDestroy(); }
+    @Override protected void onDestroy() { destroyed=true;clearReset();++setupGeneration;if(onboarding!=null)onboarding.cancel();enrollmentWorker.shutdownNow();worker.shutdownNow();if(web!=null){web.removeJavascriptInterface("Readb");web.destroy();}super.onDestroy(); }
 }

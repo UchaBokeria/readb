@@ -42,7 +42,7 @@
             <button id="setup-connect" class="primary" type="submit">Connect device</button>
           </form>
           <p id="setup-progress" role="status" aria-live="polite" hidden></p>
-          <button id="setup-resume" data-action="setup_resume" class="secondary" hidden>Resume setup</button><button id="setup-cancel" data-action="setup_cancel" class="secondary" hidden>Cancel</button>
+          <button id="setup-resume" data-action="setup_resume" class="secondary" hidden>Resume setup</button><button id="setup-cancel" data-action="setup_cancel" class="secondary" hidden>Cancel</button><button id="setup-change-server" data-action="setup_reset_review" class="secondary" hidden>Change server address</button>
           <details class="inline-details"><summary>Advanced: import an existing setup</summary><p>Only for an existing private server profile. New devices should use the code above.</p><button data-action="import" class="secondary">Import setup file</button></details>
           </div></li>
           <li><div class="step-content"><h2>Allow notifications</h2><p id="notifications">Checking…</p><button id="notification-action" data-action="notifications_settings" class="secondary">Notification settings</button></div></li>
@@ -80,6 +80,10 @@
       <div class="access-actions"><button id="request-access" data-action="request_access" class="primary">Review Android prompts</button><button id="finish-access" class="secondary">Done for now</button></div>
     </div>
   </dialog>
+  <dialog id="reset-server-dialog" aria-labelledby="reset-server-title"><div class="access-content">
+    <h2 id="reset-server-title">Change server address?</h2><p>The unfinished setup will be archived in encrypted device storage. Its keys stay saved.</p><p>Any pending setup on the old server stays there. Check that server’s dashboard separately. This cannot remove a connected or bound device.</p>
+    <div class="access-actions"><button id="confirm-server-reset" class="primary">Archive and change address</button><button id="cancel-server-reset" class="secondary">Keep this setup</button></div>
+  </div></dialog>
   <script src="/app.js"></script>
 </body>
 </html>

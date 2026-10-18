@@ -34,9 +34,14 @@ window.updateReadb = state => {
   $('setup-progress').textContent = state.setup_message || '';
   $('setup-connect').disabled = !!state.setup_active || !!state.enrolled;
   $('setup-server').disabled = !!state.setup_active || !!state.enrolled;
+  $('setup-server').readOnly = !!state.setup_saved;
+  if (state.setup_saved && state.setup_server) $('setup-server').value = state.setup_server;
   $('setup-code').disabled = !!state.setup_active || !!state.enrolled;
   $('setup-resume').hidden = !state.setup_saved || !!state.enrolled || !!state.setup_active;
-  $('setup-cancel').hidden = !state.setup_active;
+  $('setup-cancel').hidden = !state.setup_active || state.setup_phase === 'archiving';
+  $('setup-change-server').hidden = !state.setup_saved || !!state.enrolled || !!state.setup_active;
+  if (state.setup_reset_review && !$('reset-server-dialog').open) $('reset-server-dialog').showModal();
+  if (!state.setup_reset_review && $('reset-server-dialog').open) $('reset-server-dialog').close();
   if (state.enrolled || state.setup_active) $('setup-code').value = '';
   $('vpn').textContent = state.vpn_message || 'Not started';
   $('report').textContent = state.wireless_debugging === false ? 'Wireless debugging is off' : state.report_message || 'Not started';
@@ -68,6 +73,9 @@ window.updateReadb = state => {
   if (state.permission_setup_required === true && !accessShown) showAccess();
   if (state.message) { $('notice').hidden = false; $('message').textContent = state.message; }
 };
+$('confirm-server-reset').addEventListener('click', () => command('setup_reset_confirm'));
+$('cancel-server-reset').addEventListener('click', () => command('setup_reset_cancel'));
+$('reset-server-dialog').addEventListener('cancel', event => {event.preventDefault();command('setup_reset_cancel');});
 $('hero-primary').addEventListener('click', () => window.readbNavigate('setup'));
 $('connect-form').addEventListener('submit', event => {event.preventDefault();const code=$('setup-code').value;command('setup_connect',{server:$('setup-server').value,code});$('setup-code').value='';});
 document.querySelectorAll('[data-action]').forEach(button => button.addEventListener('click', () => command(button.dataset.action)));
