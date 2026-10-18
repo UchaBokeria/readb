@@ -275,17 +275,28 @@ pub fn install_recover(p: &InstallPlan, home: &Path, dry_run: bool, recover: boo
     )
 }
 
+pub fn manager_output(
+    program: &std::ffi::OsStr,
+    args: &[&str],
+    deadline: std::time::Duration,
+) -> Res<crate::runner::Captured> {
+    let mut command = Command::new(program);
+    command.args(args);
+    crate::runner::capture_cmd(command, deadline, 1024 * 1024).map_err(|e| {
+        format!("service_manager_unconfirmed: {e}; verify the actual unit before retry")
+    })
+}
 pub fn systemctl(args: &[&str]) -> Res<Value> {
-    let output = Command::new("systemctl")
-        .arg("--user")
-        .args(args)
-        .output()
-        .map_err(
-            |_| "service_manager_unavailable: use readb --local daemon --config FILE in foreground",
-        )?;
-    let text = String::from_utf8_lossy(&output.stdout);
-    let err = String::from_utf8_lossy(&output.stderr);
-    if !output.status.success() {
+    let mut argv = vec!["--user"];
+    argv.extend_from_slice(args);
+    let output = manager_output(
+        std::ffi::OsStr::new("systemctl"),
+        &argv,
+        std::time::Duration::from_secs(30),
+    )?;
+    let text = String::from_utf8_lossy(&output.out);
+    let err = String::from_utf8_lossy(&output.err);
+    if !output.ok {
         return Err(format!("service_manager_failed: {}", err.trim()));
     }
     Ok(json!({"ok":true,"output":text.trim()}))
@@ -299,8 +310,9 @@ pub fn manage(action: &str) -> Res<Value> {
         "stop" => systemctl(&["stop", "readb.service"]),
         "restart" => systemctl(&["restart", "readb.service"]),
         "status" => {
-            let o = Command::new("systemctl")
-                .args([
+            let o = manager_output(
+                std::ffi::OsStr::new("systemctl"),
+                &[
                     "--user",
                     "show",
                     "readb.service",
@@ -314,10 +326,16 @@ pub fn manage(action: &str) -> Res<Value> {
                     "MemoryCurrent",
                     "-p",
                     "CPUUsageNSec",
-                ])
-                .output()
-                .map_err(|_| "service_status_unavailable")?;
-            Ok(json!({"ok":o.status.success(),"status":String::from_utf8_lossy(&o.stdout)}))
+                ],
+                std::time::Duration::from_secs(10),
+            )?;
+            if !o.ok {
+                return Err(format!(
+                    "service_status_unavailable: {}",
+                    String::from_utf8_lossy(&o.err).trim()
+                ));
+            }
+            Ok(json!({"ok":true,"status":String::from_utf8_lossy(&o.out)}))
         }
         "uninstall" => {
             systemctl(&["disable", "--now", "readb.service"])?;

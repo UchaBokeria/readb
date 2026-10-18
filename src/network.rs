@@ -507,6 +507,12 @@ impl Manager {
         Ok(())
     }
     pub fn restore(&mut self, uid: u32, k: &mut impl Kernel) -> Res<()> {
+        self.restore_up_to(uid, k, usize::MAX).map(|_| ())
+    }
+    pub fn restore_up_to(&mut self, uid: u32, k: &mut impl Kernel, limit: usize) -> Res<usize> {
+        if limit == 0 {
+            return Err("network_restore_batch_required".into());
+        }
         if uid != 0 {
             return Err("network_restore_requires_root".into());
         }
@@ -522,10 +528,11 @@ impl Manager {
             .filter(|(_, p)| !snapshot.peers.contains_key(&p.key))
             .map(|(id, _)| id.clone())
             .collect();
-        for id in missing {
+        let remaining = missing.len().saturating_sub(limit);
+        for id in missing.into_iter().take(limit) {
             self.apply(0, Request::Restore { id }, k)?;
         }
-        Ok(())
+        Ok(remaining)
     }
     pub fn reconcile(&mut self, uid: u32, k: &mut impl Kernel) -> Res<()> {
         self.policy.admit(uid)?;

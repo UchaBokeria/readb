@@ -347,3 +347,161 @@ fn interrupted_boot_restore_preserves_manifest_and_recovers_without_adoption() {
     assert!(k.snapshot.peers.contains_key(&key('C')));
     std::fs::remove_dir_all(p).unwrap();
 }
+#[test]
+fn runtime_recovery_heals_after_link_return_without_overwriting_foreign_routes() {
+    use readb::network_recovery::Recovery;
+    let root = state();
+    let mut manager = Manager::open(&root, policy()).unwrap();
+    let mut k = kernel();
+    manager.apply(1000, enroll(), &mut k).unwrap();
+    let enrolled = k.snapshot.clone();
+    let mut recovery = Recovery::new(0);
+    assert!(
+        recovery
+            .tick(0, false, &mut manager, &mut k)
+            .unwrap()
+            .is_ok()
+    );
+    // Interface identity temporarily unavailable. No write is attempted.
+    k.snapshot.addresses.clear();
+    assert!(
+        recovery
+            .tick(2000, true, &mut manager, &mut k)
+            .unwrap()
+            .is_err()
+    );
+    let writes = k.calls;
+    assert!(recovery.tick(2001, true, &mut manager, &mut k).is_none());
+    assert_eq!(k.calls, writes);
+    k.snapshot = enrolled.clone();
+    k.snapshot.peers.remove(&key('C'));
+    assert!(
+        recovery
+            .tick(4000, true, &mut manager, &mut k)
+            .unwrap()
+            .is_ok()
+    );
+    assert_eq!(k.snapshot, enrolled);
+    assert_eq!(k.calls, writes + 1);
+    // Missing peer collides with an external aggregate route; preserve it.
+    k.snapshot.peers.remove(&key('C'));
+    k.snapshot
+        .peers
+        .insert(key('D'), vec!["10.88.0.0/24".into()]);
+    assert!(
+        recovery
+            .tick(6000, true, &mut manager, &mut k)
+            .unwrap()
+            .is_err()
+    );
+    assert_eq!(k.calls, writes + 1);
+    assert!(recovery.status(6000)["last_error"].is_string());
+    std::fs::remove_dir_all(root).unwrap();
+}
+#[test]
+fn recovery_uses_periodic_backoff_single_peer_batches_and_preserves_fences() {
+    use readb::network_recovery::Recovery;
+    let root = state();
+    let mut manager = Manager::open(&root, policy()).unwrap();
+    let mut k = kernel();
+    manager.apply(1000, enroll(), &mut k).unwrap();
+    manager
+        .apply(
+            1000,
+            Request::Enroll {
+                id: "quest".into(),
+                key: key('D'),
+                address: "10.88.0.11".parse().unwrap(),
+            },
+            &mut k,
+        )
+        .unwrap();
+    let mut recovery = Recovery::new(0);
+    recovery
+        .tick(0, false, &mut manager, &mut k)
+        .unwrap()
+        .unwrap();
+    let writes = k.calls;
+    k.snapshot.peers.remove(&key('C'));
+    k.snapshot.peers.remove(&key('D'));
+    assert!(recovery.tick(29999, false, &mut manager, &mut k).is_none());
+    recovery
+        .tick(30000, false, &mut manager, &mut k)
+        .unwrap()
+        .unwrap();
+    assert_eq!(k.calls, writes + 1);
+    assert!(recovery.tick(30001, false, &mut manager, &mut k).is_none());
+    recovery
+        .tick(32000, false, &mut manager, &mut k)
+        .unwrap()
+        .unwrap();
+    assert_eq!(k.calls, writes + 2);
+    k.snapshot.server_key = key('F');
+    assert!(
+        recovery
+            .tick(62000, false, &mut manager, &mut k)
+            .unwrap()
+            .is_err()
+    );
+    let attempts = k.calls;
+    recovery.completed_at(63000);
+    assert!(recovery.tick(67999, false, &mut manager, &mut k).is_none());
+    assert!(
+        recovery
+            .tick(68000, false, &mut manager, &mut k)
+            .unwrap()
+            .is_err()
+    );
+    assert_eq!(k.calls, attempts);
+    // A failed managed write leaves durable pending. Periodic work never reconciles it.
+    k.snapshot.server_key = key('E');
+    k.snapshot.peers.remove(&key('C'));
+    k.fail = true;
+    assert!(
+        manager
+            .apply(1000, Request::Restore { id: "phone".into() }, &mut k)
+            .is_err()
+    );
+    assert!(!manager.fenced());
+    assert!(
+        manager
+            .apply(0, Request::Restore { id: "phone".into() }, &mut k)
+            .is_err()
+    );
+    let writes = k.calls;
+    assert!(
+        recovery
+            .tick(77000, true, &mut manager, &mut k)
+            .unwrap()
+            .is_err()
+    );
+    assert!(manager.fenced());
+    assert_eq!(writes, k.calls);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn recovery_event_cooldown_starts_after_slow_probe_completion() {
+    use readb::network_recovery::Recovery;
+    let root = state();
+    let mut manager = Manager::open(&root, policy()).unwrap();
+    let mut k = kernel();
+    k.snapshot.addresses.clear();
+    let mut recovery = Recovery::new(0);
+    assert!(
+        recovery
+            .tick(0, false, &mut manager, &mut k)
+            .unwrap()
+            .is_err()
+    );
+    recovery.completed_at(15000);
+    assert!(recovery.tick(15001, true, &mut manager, &mut k).is_none());
+    assert!(recovery.tick(16999, true, &mut manager, &mut k).is_none());
+    assert!(
+        recovery
+            .tick(17000, true, &mut manager, &mut k)
+            .unwrap()
+            .is_err()
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}

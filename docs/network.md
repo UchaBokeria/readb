@@ -55,12 +55,19 @@ namespace passed real root-helper RPC, unprivileged enrollment/removal, restart
 state, adoption denial, unrelated-peer preservation and external-edit refusal.
 No live VPN change, fresh install, boot restoration or device cutover is proved.
 
-On helper startup, root restores only missing peers already in its manifest, one
-journaled peer at a time. Existing changed peers and conflicting external routes
-are left alone. An unresolved intent keeps RPC available for status/reconcile;
-startup never silently clears it. Ordinary clients cannot call either restore
-entry point. Isolated tests removed a managed peer while stopped, then verified
-startup restored it. No actual Blackwall or Android reboot was performed.
+While running, the helper checks its pinned interface on startup, link/address
+notifications and every30seconds. It restores at most one recorded missing peer
+per pass. Events coalesce; the earliest next pass is2seconds after completion,
+including slow failed probes. Without events, failures retry after5/10/20/40/60s.
+Events can accelerate that backoff to the2second floor. Missing notification
+support falls back to periodic checks. Status exposes the last error and next check.
+
+Existing changed peers and conflicting external routes are left alone. A stopped
+interface stays stopped; the helper never creates, rekeys or brings up an interface.
+An unresolved intent keeps status/reconcile available and blocks automatic writes.
+Ordinary clients cannot call either root restore entry point. Isolated namespace
+tests prove link deletion/recreation, down/up, key mismatch, unrelated-peer
+preservation and periodic recovery. No host or Android reboot was performed.
 
 ## Install helper files
 
@@ -91,9 +98,12 @@ filesystem tests also passed as root on Blackwall in isolated image directories.
 The namespace helper passed with only CAP_NET_ADMIN and CAP_CHOWN. No production
 unit installation/activation, host reboot, fresh setup or device cutover proved.
 
-Runtime interface restart remains a setup gate: startup restore is tested, but
-a WireGuard restart while the helper stays running needs explicit recovery wiring
-and acceptance. An active interface alone does not prove boot persistence.
+Runtime recovery is tested with fake kernels and a real isolated Blackwall network
+namespace. Full helper-loop/service-manager restart acceptance remains a setup gate;
+the namespace check does not prove production boot persistence. Kernel probes run
+serially with bounded subprocesses; a slow operation can delay RPC replies. A lost
+reply is unconfirmed completion: inspect status/pending intent before retrying.
+Do not clear a fence or repeat a peer mutation merely because a client timed out.
 
 Root policy creation is now a separate journaled library phase. It creates only
 the canonical0600 policy, with atomic no-replace publication. A pending policy

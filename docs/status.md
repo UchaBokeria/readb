@@ -140,3 +140,21 @@ activation, network runtime recovery and encrypted device migration remain open.
 Portable4.2MB musl release passed isolated Blackwall user install/reload-failure/
 explicit-recovery checks with temporary HOME and fake manager. No live service or
 device change. Source c94a538; full migration gates above remain open.
+
+
+October18 runtime recovery slice: route-netlink link/address events plus30second
+periodic checks restore at most one recorded missing peer per pass. Notifications
+coalesce with a2second floor after completion, including slow failures; event-free
+failures back off5/10/20/40/60seconds. Changed identity/routes and pending intent
+remain fenced. Down interfaces stay down. Status exposes recovery health.
+Service-manager calls now have deadlines and bounded output; uncertain completion
+requires inspecting actual state before retry. No new production unit is active.
+
+Actual Blackwall isolated network namespace proved link deletion/recreation,
+down/up, key mismatch, periodic fallback and unrelated-peer preservation. Global
+mobile config/key/routes were unchanged and all namespace/root fixtures removed.
+This tests manager/scheduler/kernel behavior, not the full production daemon loop,
+boot persistence or device cutover. Full helper activation/controller scope remains
+open. Review found a completion-cooldown bug; a failing regression preceded its fix.
+
+Host191 and Rust1.88/musl191 workspace tests, Clippy and formatting pass.

@@ -55,6 +55,14 @@ fn peer_uid(s: &UnixStream) -> Res<u32> {
     Ok(unsafe { c.assume_init() }.uid)
 }
 pub fn handle(s: &mut UnixStream, m: &mut Manager, k: &mut impl Kernel) -> Res<()> {
+    handle_recovery(s, m, k, None)
+}
+fn handle_recovery(
+    s: &mut UnixStream,
+    m: &mut Manager,
+    k: &mut impl Kernel,
+    health: Option<Value>,
+) -> Res<()> {
     s.set_read_timeout(Some(Duration::from_secs(2)))
         .map_err(|_| "network_socket_timeout_failed")?;
     s.set_write_timeout(Some(Duration::from_secs(2)))
@@ -73,7 +81,19 @@ pub fn handle(s: &mut UnixStream, m: &mut Manager, k: &mut impl Kernel) -> Res<(
             return Err("network_unsupported_schema".into());
         }
         match rpc.request {
-            Call::Status => m.status(uid, k),
+            Call::Status => {
+                let mut result = match m.status(uid, k) {
+                    Ok(value) => value,
+                    Err(error) if health.is_some() => {
+                        json!({"fenced":m.fenced(),"interface_verified":false,"error":error})
+                    }
+                    Err(error) => return Err(error),
+                };
+                if let Some(health) = health {
+                    result["recovery"] = health;
+                }
+                Ok(result)
+            }
             Call::Restore => {
                 m.restore(uid, k)?;
                 Ok(json!({"restored":true}))
@@ -163,6 +183,35 @@ impl LinuxKernel {
         Ok(r.out)
     }
 }
+fn snapshot_addresses(addresses: &[Value]) -> Res<Vec<String>> {
+    if addresses.len() != 1 {
+        return Err("network_interface_missing_or_ambiguous".into());
+    }
+    if !addresses[0]["flags"]
+        .as_array()
+        .is_some_and(|flags| flags.iter().any(|flag| flag == "UP"))
+    {
+        return Err("network_interface_down".into());
+    }
+    let mut ips = Vec::new();
+    for a in addresses[0]["addr_info"]
+        .as_array()
+        .ok_or("network_invalid_snapshot")?
+    {
+        let addr = a["local"]
+            .as_str()
+            .ok_or("network_invalid_snapshot")?
+            .parse::<Ipv4Addr>()
+            .map_err(|_| "network_invalid_snapshot")?;
+        let prefix = a["prefixlen"]
+            .as_u64()
+            .filter(|n| *n <= 32)
+            .ok_or("network_invalid_snapshot")?;
+        ips.push(format!("{addr}/{prefix}"));
+    }
+    ips.sort();
+    Ok(ips)
+}
 impl Kernel for LinuxKernel {
     fn snapshot(&mut self, p: &Policy) -> Res<Snapshot> {
         p.validate()?;
@@ -177,26 +226,7 @@ impl Kernel for LinuxKernel {
         )?;
         let addresses: Vec<Value> =
             serde_json::from_slice(&addresses).map_err(|_| "network_invalid_snapshot")?;
-        if addresses.len() != 1 {
-            return Err("network_interface_missing_or_ambiguous".into());
-        }
-        let mut ips = Vec::new();
-        for a in addresses[0]["addr_info"]
-            .as_array()
-            .ok_or("network_invalid_snapshot")?
-        {
-            let addr = a["local"]
-                .as_str()
-                .ok_or("network_invalid_snapshot")?
-                .parse::<Ipv4Addr>()
-                .map_err(|_| "network_invalid_snapshot")?;
-            let prefix = a["prefixlen"]
-                .as_u64()
-                .filter(|n| *n <= 32)
-                .ok_or("network_invalid_snapshot")?;
-            ips.push(format!("{addr}/{prefix}"));
-        }
-        ips.sort();
+        let ips = snapshot_addresses(&addresses)?;
         let raw = Self::command(&self.wg, &["show", &p.interface, "allowed-ips"])?;
         let raw = std::str::from_utf8(&raw).map_err(|_| "network_invalid_snapshot")?;
         let mut peers = BTreeMap::new();
@@ -339,16 +369,55 @@ pub fn serve(policy_path: &Path, state: &Path) -> Res<()> {
     }
     let mut manager = Manager::open(state, p)?;
     let mut kernel = LinuxKernel::new()?;
-    // Reapply only recorded missing peers after boot. Keep RPC available for
-    // status/reconcile if an interrupted intent or external edit blocks restore.
-    if let Err(error) = manager.restore(0, &mut kernel) {
-        eprintln!("readb network startup: {error}");
+    socket
+        .set_nonblocking(true)
+        .map_err(|_| "network_nonblocking_listener_failed")?;
+    let origin = std::time::Instant::now();
+    let now = || origin.elapsed().as_millis().min(u64::MAX as u128) as u64;
+    let mut recovery = crate::network_recovery::Recovery::new(now());
+    let mut events = crate::route_events::RouteEvents::new().ok();
+    if events.is_none() {
+        eprintln!("readb network: link notifications unavailable; periodic checks remain active");
     }
-    for stream in socket.incoming() {
-        let mut s = stream.map_err(|_| "network_socket_accept_failed")?;
-        let _ = handle(&mut s, &mut manager, &mut kernel);
+    let mut event = false;
+    let mut last_error = None;
+    loop {
+        if let Some(result) = recovery.tick(now(), event, &mut manager, &mut kernel) {
+            recovery.completed_at(now());
+            let error = result.err();
+            if error != last_error {
+                if let Some(reason) = &error {
+                    eprintln!("readb network recovery: {reason}");
+                }
+                last_error = error;
+            }
+        }
+        let (control, changed) =
+            crate::route_events::wait(socket.as_raw_fd(), events.as_ref(), Duration::from_secs(1))?;
+        event = false;
+        if changed && let Some(watcher) = events.as_mut() {
+            match watcher.drain() {
+                Ok(value) => event = value,
+                Err(_) => {
+                    events = None;
+                    eprintln!(
+                        "readb network: link notifications lost; periodic checks remain active"
+                    );
+                }
+            }
+        }
+        if control {
+            match socket.accept() {
+                Ok((mut stream, _)) => {
+                    let mut health = recovery.status(now());
+                    health["link_events"] = json!(events.is_some());
+                    let _ = handle_recovery(&mut stream, &mut manager, &mut kernel, Some(health));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => (),
+                Err(_) => return Err("network_socket_accept_failed".into()),
+            }
+        }
     }
-    Ok(())
 }
 pub fn call(request: Call) -> Res<Value> {
     let mut s = UnixStream::connect(SOCKET)
@@ -396,5 +465,76 @@ mod trusted_probe_tests {
         assert!(super::program(&[path.to_str().unwrap()]).is_err());
         std::fs::remove_file(path).unwrap();
         assert!(super::program(&["/usr/bin/true", "/bin/true"]).is_ok());
+    }
+}
+#[cfg(test)]
+mod link_state_tests {
+    use super::*;
+    #[test]
+    fn pinned_address_does_not_make_a_stopped_interface_ready() {
+        let up = serde_json::json!([{"flags":["UP","LOWER_UP"],"addr_info":[{"local":"10.88.0.1","prefixlen":24}]}]);
+        assert_eq!(
+            snapshot_addresses(up.as_array().unwrap()).unwrap(),
+            vec!["10.88.0.1/24"]
+        );
+        let down =
+            serde_json::json!([{"flags":[],"addr_info":[{"local":"10.88.0.1","prefixlen":24}]}]);
+        assert!(snapshot_addresses(down.as_array().unwrap()).is_err());
+    }
+}
+#[cfg(test)]
+mod recovery_status_tests {
+    use super::*;
+    struct Missing;
+    impl Kernel for Missing {
+        fn snapshot(&mut self, _: &Policy) -> Res<Snapshot> {
+            Err("network_interface_missing".into())
+        }
+        fn set(&mut self, _: &Policy, _: &str, _: Option<Ipv4Addr>) -> Res<()> {
+            panic!("status must never write")
+        }
+    }
+    #[test]
+    fn unavailable_interface_status_still_explains_recovery_without_writing() {
+        let root =
+            std::env::temp_dir().join(format!("readb-recovery-status-{}", crate::policy::random()));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let p = Policy {
+            schema: 1,
+            uid: unsafe { libc::geteuid() },
+            interface: "readb0".into(),
+            server_key: format!("{}AAA=", "E".repeat(40)),
+            server_address: "10.88.0.1".parse().unwrap(),
+            prefix: 24,
+            first: "10.88.0.10".parse().unwrap(),
+            last: "10.88.0.20".parse().unwrap(),
+        };
+        let mut manager = Manager::open(&root, p).unwrap();
+        let (mut client, mut server) = UnixStream::pair().unwrap();
+        client
+            .write_all(
+                &serde_json::to_vec(&Rpc {
+                    schema: 1,
+                    request: Call::Status,
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        client.write_all(b"\n").unwrap();
+        handle_recovery(
+            &mut server,
+            &mut manager,
+            &mut Missing,
+            Some(json!({"last_error":"network_interface_missing","next_check_in_ms":5000})),
+        )
+        .unwrap();
+        let reply = crate::wire::line(&mut client, 4096).unwrap();
+        let reply: Value = serde_json::from_slice(&reply).unwrap();
+        assert_eq!(reply["ok"], true);
+        assert_eq!(reply["result"]["interface_verified"], false);
+        assert_eq!(reply["result"]["recovery"]["next_check_in_ms"], 5000);
+        assert!(!manager.fenced());
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

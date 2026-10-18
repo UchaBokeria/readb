@@ -48,3 +48,7 @@ pub mod setup_files;
 pub mod setup_user;
 
 pub mod user_install;
+
+pub mod network_recovery;
+
+pub mod route_events;
