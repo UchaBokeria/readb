@@ -1,9 +1,76 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'"><title>readb</title><link rel="stylesheet" href="/style.css"></head>
-<body><main class="companion"><header><a class="brand" href="#">readb<span>Device link</span></a><span id="live" class="badge">Not started</span></header>
-<section class="intro"><h1>Your device.<br>Your private link.</h1><p>Secure ADB through your server. No cable. No nearby computer.</p></section>
-<div class="connection"><div class="connection-title"><span class="signal" aria-hidden="true"></span><h2>This device</h2></div><dl><div><dt>Private VPN</dt><dd id="vpn">Not started</dd></div><div><dt>Secure ADB</dt><dd id="report">Not started</dd></div><div><dt>Last report</dt><dd id="last">No report yet</dd></div></dl><div class="actions"><button id="start" class="primary" data-action="start">Start private link</button><button id="stop" data-action="stop">Stop</button></div><p class="note">Starting replaces any active Android VPN. Only this device’s server address goes through the readb tunnel.</p></div>
-<p id="message" role="status" aria-live="polite"></p>
-<section><div class="section-title"><h2>Setup</h2><span id="enrolled" class="muted">Profile missing</span></div><p>Import the private enrollment file from your readb server. It stays encrypted in Android Keystore storage.</p><button data-action="import">Import enrollment</button></section>
-<section><h2>Permissions</h2><p>Android asks for these separately. You can return here any time.</p><div class="permission"><div><h3>Notifications</h3><p id="notifications">Checking…</p></div><button data-action="notifications">Allow</button></div><div class="permission"><div><h3>Wireless debugging</h3><p>Enable it, then pair with your server. Pairing stays secure.</p></div><button data-action="debug_settings">Open settings</button></div><div class="permission"><div><h3>Private VPN</h3><p>Approval is requested when you start the link.</p></div><button data-action="vpn_settings">Manage</button></div><div class="permission"><div><h3>Boot recovery</h3><p id="secure">Checking…</p></div><button data-action="app_settings">App settings</button></div></section>
-<section class="limits"><h2>Awake does not mean unlocked</h2><p>Your server’s keepalive policy keeps an accepted device active where Android allows it. Your PIN stays enabled. A protected Quest lockscreen or a new Wi-Fi consent prompt can still need your input after reboot.</p><p>No silent security bypass. The server shows what is actually connected.</p></section>
-<footer>readb · private remote Android tools</footer></main><script src="/app.js"></script></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>readb</title><link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="companion">
+    <header class="app-bar">
+      <div class="brand"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="M12 7H6v18h6M20 7h6v18h-6M11 20l10-8"/></svg><div>readb<span>Device link</span></div></div>
+      <span id="live" class="state-badge">Setup needed</span>
+    </header>
+    <div id="notice" class="notice" hidden><p id="message" role="status" aria-live="polite"></p><button id="dismiss-message" class="icon-button" aria-label="Dismiss message">×</button></div>
+    <aside id="debug-warning" class="debug-warning" hidden role="alert"><div><strong>Wireless debugging is off</strong><p>Your server cannot reach secure ADB until it is enabled.</p></div><button data-action="debug_settings">Open settings</button></aside>
+    <main>
+      <section id="page-connection" class="page" aria-labelledby="title-connection">
+        <h1 id="title-connection">Connection</h1>
+        <div class="link-surface">
+          <div class="link-mark" aria-hidden="true"><svg viewBox="0 0 64 48"><rect x="1" y="5" width="20" height="38" rx="5"/><path d="M8 36h6M29 24h12M36 19l5 5-5 5"/><rect x="49" y="10" width="14" height="28" rx="3"/><path d="M53 17h6M53 23h6M53 29h6"/></svg></div>
+          <h2 id="connection-title">Connect this device</h2>
+          <p id="connection-copy">Import your setup to create a private link to your server.</p>
+          <button id="hero-primary" class="primary" data-action="import">Import setup</button>
+          <div id="link-actions" class="link-actions" hidden><button id="start" class="primary" data-action="start">Start private link</button><button id="stop" class="secondary" data-action="stop">Stop</button></div>
+        </div>
+        <div class="status-list" aria-label="Connection status">
+          <div class="status-row"><span class="status-icon signal" aria-hidden="true"></span><div><h3>Private tunnel</h3><p id="vpn">Not started</p></div></div>
+          <div class="status-row"><svg class="status-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 8l4 4-4 4M13 17h5"/></svg><div><h3>Secure ADB</h3><p id="report">Not started</p></div></div>
+          <div class="status-row"><svg class="status-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 8h14M5 16h14M9 4v16M15 4v16"/></svg><div><h3>Connection port</h3><p id="remote-port">Not available</p><small id="remote-port-age">Waiting for a current secure ADB port.</small></div></div>
+          <div class="status-row"><svg class="status-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2"/></svg><div><h3>Last report sent</h3><p id="last">No report yet</p></div></div>
+        </div>
+        <details class="help-disclosure"><summary>How the private link works</summary><p>WireGuard is built into readb. No separate VPN app is needed. Only the server address in your setup uses this tunnel.</p><p>Android supports one active VPN. Starting readb replaces another active VPN. You choose when to start.</p><p>A tunnel being active does not prove that your server accepted the device. Check secure ADB and the server dashboard too.</p></details>
+      </section>
+      <section id="page-setup" class="page" aria-labelledby="title-setup" hidden>
+        <h1 id="title-setup">Setup</h1><p class="page-description">A few steps now. Port changes are reported automatically later.</p>
+        <ol class="setup-list">
+          <li><div class="step-content"><h2>Import your setup</h2><p id="enrolled">Profile missing</p><p class="step-help">Use the private JSON file from your readb server. It stays encrypted on this device.</p><button data-action="import" class="secondary">Import setup</button></div></li>
+          <li><div class="step-content"><h2>Allow notifications</h2><p id="notifications">Checking…</p><button id="notification-action" data-action="notifications_settings" class="secondary">Notification settings</button></div></li>
+          <li><div class="step-content"><h2>Enable wireless debugging</h2><p id="debug-state">Open settings to check.</p><p class="step-help">Turn on Wireless debugging. Keep its pairing-code screen open when you pair on your server.</p><button data-action="debug_settings" class="secondary">Open wireless debugging</button></div></li>
+          <li><div class="step-content"><h2>Start the private link</h2><p>WireGuard is built into readb. Approve <strong>readb</strong> below. No other VPN app is needed.</p><p class="vpn-warning">Approval may replace your current VPN. Starting the tunnel is a separate step.</p><button id="setup-vpn-approval" data-action="approve_vpn" class="secondary">Allow readb VPN</button><p id="vpn-approval-state" class="step-help">Approval not checked yet.</p><button id="setup-start" data-action="start" class="secondary">Start private link</button></div></li>
+          <li><div class="step-content"><h2>Pair with your server</h2><p>On your server dashboard, open this device and choose <strong>Pair device</strong>. Enter the displayed pairing port and code once.</p><details class="inline-details"><summary>Using the CLI?</summary><p>Claim a controller job, then run:</p><code>readb -d DEVICE --ticket FILE device pair --port PORT</code><p>The CLI asks for the code privately. Verify the first device fingerprint before device work.</p></details></div></li>
+        </ol>
+      </section>
+      <section id="page-settings" class="page" aria-labelledby="title-settings" hidden>
+        <h1 id="title-settings">Settings</h1><p class="page-description">Device permissions and recovery.</p>
+        <div class="settings-section"><h2>Android controls</h2><button id="review-access" class="secondary">Review device access</button><div class="permission"><div><h3>readb VPN access</h3><p id="settings-vpn-state">WireGuard is built into readb.</p></div><button data-action="approve_vpn" class="secondary">Allow</button></div><div class="permission"><div><h3>Android VPN list</h3><p>Choose readb after approving its access.</p></div><button data-action="vpn_settings" class="secondary">Open</button></div><div class="permission"><div><h3>App permissions</h3><p>Open readb's App info, then choose Permissions.</p></div><button data-action="permissions_settings" class="secondary">Open</button></div></div>
+        <div class="settings-section"><h2>While you work</h2><p>Keep awake is managed from your server's device settings. It requests an active screen where Android allows it. This app never silently removes your PIN.</p></div>
+        <div class="settings-section"><h2>After a restart</h2><p id="secure">Checking…</p><details class="help-disclosure"><summary>Keep awake and unlocking</summary><p>Your server's keepalive setting requests an awake device where Android allows it. Your PIN stays enabled.</p><p>A protected Quest lockscreen or a new Wi-Fi approval can still need your input after reboot. Awake does not mean unlocked.</p></details></div>
+        <div class="settings-section quiet-section"><h2>Your setup stays private</h2><p>The saved profile uses Android Keystore encryption. Stopping the link keeps the profile and pairing so you can reconnect later.</p><button class="secondary" data-action="import">Change setup</button><p class="fine-print">Stop the link before importing another profile.</p></div>
+      </section>
+    </main>
+    <footer class="app-footer">Private link. Honest device status.</footer>
+  </div>
+  <nav class="bottom-nav" aria-label="Main navigation"><div class="bottom-nav-inner">
+    <button id="tab-connection" class="nav-tab selected" data-page="connection" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5H5v14h4M15 5h4v14h-4M9 14l6-4"/></svg><span>Connection</span></button>
+    <button id="tab-setup" class="nav-tab" data-page="setup"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5h10M9 12h10M9 19h10M3 5l1 1 2-2M3 12l1 1 2-2M3 19l1 1 2-2"/></svg><span>Setup</span></button>
+    <button id="tab-settings" class="nav-tab" data-page="settings"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3"/><circle cx="15" cy="17" r="3"/></svg><span>Settings</span></button>
+  </div></nav>
+  <dialog id="access-dialog" aria-labelledby="access-title" aria-describedby="access-description">
+    <div class="access-content">
+      <header><h2 id="access-title">Prepare device access</h2><button id="close-access" class="icon-button" aria-label="Finish access review for now">×</button></header>
+      <p id="access-description">Android asks for each access separately. Review them once here. You can change them later in Settings.</p>
+      <ul class="access-checklist">
+        <li><div><strong>Notifications</strong><span id="access-notifications">Checking…</span></div><button data-action="notifications_settings" class="secondary">Settings</button></li>
+        <li><div><strong>Built-in readb VPN</strong><small>Approval may replace your current VPN.</small><span id="access-vpn">Checking…</span></div><button data-action="approve_vpn" class="secondary">Allow</button></li>
+        <li><div><strong>Wireless debugging</strong><span id="access-debug">Checking…</span></div><button data-action="debug_settings" class="secondary">Open</button></li>
+      </ul>
+      <div class="access-warning"><strong>One active VPN</strong><p>Approving readb may replace your current VPN. The tunnel starts only when you choose Start private link. You do not need a separate WireGuard app.</p></div>
+      <p class="access-limits">Wireless debugging needs a Settings switch. Extra secure-settings access cannot be granted with a normal Android permission prompt. Your PIN stays enabled.</p>
+      <div class="access-actions"><button id="request-access" data-action="request_access" class="primary">Review Android prompts</button><button id="finish-access" class="secondary">Done for now</button></div>
+    </div>
+  </dialog>
+  <script src="/app.js"></script>
+</body>
+</html>

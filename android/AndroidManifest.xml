@@ -7,7 +7,8 @@
   <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
   <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
   <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
-  <application android:label="readb" android:theme="@android:style/Theme.Material.NoActionBar" android:allowBackup="false" android:extractNativeLibs="true" android:directBootAware="true" android:networkSecurityConfig="@xml/network_security_config">
+  <queries><package android:name="com.android.settings"/><package android:name="dev.quickshard.adblink"/><package android:name="dev.hermes.pixeladbhelper"/></queries>
+  <application android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher" android:label="readb" android:theme="@android:style/Theme.Material.NoActionBar" android:allowBackup="false" android:extractNativeLibs="true" android:directBootAware="true" android:networkSecurityConfig="@xml/network_security_config">
     <activity android:name=".MainActivity" android:exported="true" android:resizeableActivity="true" android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden" android:windowSoftInputMode="stateAlwaysHidden|adjustResize">
       <layout android:defaultWidth="1024dp" android:defaultHeight="720dp" android:minWidth="360dp" android:minHeight="320dp"/>
       <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/><category android:name="com.oculus.intent.category.2D"/></intent-filter>

@@ -1,0 +1,16 @@
+--- a/src/dev/quickshard/adblink/BenchPinStore.java
++++ b/src/dev/quickshard/adblink/BenchPinStore.java
+@@ -69,6 +69,13 @@
+  /** Caller must wipe the returned bytes after success OR abort. */
+  static synchronized byte[] loadBytes(Context context)throws IOException{
+   if(!enabled(context))throw new IOException("Private PIN not enabled");
++  return readStored(context);
++ }
++ /** Certificate-authenticated migration only; preserves disabled credentials without enabling them. */
++ static synchronized byte[] exportStored(Context context)throws IOException{
++  if(!exists(context))return new byte[0];return readStored(context);
++ }
++ private static byte[] readStored(Context context)throws IOException{
+   byte[] encrypted=null,plaintext=null;
+   try{
+    try(FileInputStream input=file(context).openRead()){encrypted=input.readNBytes(65);}

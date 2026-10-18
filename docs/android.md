@@ -97,3 +97,5 @@ result contains a bounded `png_base64` capture; save privately and inspect it.
 It closes its test activity and does not import profiles, grant permissions or
 start a VPN/report service. Capture is window-content evidence, not hand comfort,
 headset positioning, protected unlock or reboot acceptance.
+
+Encrypted legacy UID transfer implementation/acceptance: [android-handover.md](android-handover.md).

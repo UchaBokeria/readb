@@ -14,6 +14,8 @@ import xml.etree.ElementTree as ET
 ROOT = Path(__file__).resolve().parent
 REPO = ROOT.parent
 p = argparse.ArgumentParser(description=__doc__)
+p.add_argument('--handover-checks', action='store_true', help='Include synthetic encrypted migration instrumentation; never for release')
+p.add_argument('--handover-trust', type=Path, help='Explicit public package=SHA256 certificate pins; enables client migration only')
 p.add_argument('--storage-checks', action='store_true', help='Include isolated development instrumentation; never for release')
 p.add_argument('--ui-checks', action='store_true', help='Include own-window development capture; never for release')
 p.add_argument('--sdk', type=Path, required=True)
@@ -54,11 +56,11 @@ with zipfile.ZipFile(deps / 'tunnel.aar') as z:
 validate_native((deps / 'libwg-go.so').read_bytes())
 run(tools / 'aapt2', 'compile', '--dir', ROOT / 'res', '-o', out / 'resources.zip')
 manifest = ROOT / 'AndroidManifest.xml'
-if a.storage_checks or a.ui_checks:
+if a.storage_checks or a.ui_checks or a.handover_checks:
     ns = 'http://schemas.android.com/apk/res/android'
     ET.register_namespace('android', ns)
     tree = ET.parse(manifest)
-    for enabled, name in [(a.storage_checks, '.StorageChecks'), (a.ui_checks, '.UiChecks')]:
+    for enabled, name in [(a.storage_checks, '.StorageChecks'), (a.ui_checks, '.UiChecks'), (a.handover_checks, '.HandoverChecks')]:
         if enabled:
             ET.SubElement(tree.getroot(), 'instrumentation', {f'{{{ns}}}name': name, f'{{{ns}}}targetPackage': 'dev.readb.companion'})
     manifest = out / 'test-manifest.xml'
@@ -70,7 +72,7 @@ for stale in classes.rglob('*.class'):
     stale.unlink()
 jars = [deps / 'tunnel.jar', *[deps / name for name in DEPENDENCIES if name.endswith('.jar')]]
 sources = sorted((ROOT / 'src').rglob('*.java'))
-for enabled, name in [(a.storage_checks, 'StorageChecks'), (a.ui_checks, 'UiChecks')]:
+for enabled, name in [(a.storage_checks, 'StorageChecks'), (a.ui_checks, 'UiChecks'), (a.handover_checks, 'HandoverChecks')]:
     if enabled:
         sources.append(ROOT / ('tests/dev/readb/companion/' + name + '.java'))
 run('javac', '-source', '11', '-target', '11', '-classpath', os.pathsep.join(str(x) for x in [jar, *jars]), '-d', classes, *sources)
@@ -85,6 +87,11 @@ with zipfile.ZipFile(out / 'base.apk', 'a') as z:
                 z.writestr('assets/companion/style.css', (REPO / 'web/style.css').read_text() + '\n' + asset.read_text())
             else:
                 z.write(asset, 'assets/' + str(asset.relative_to(ROOT / 'assets')))
+    if a.handover_trust:
+        pins = a.handover_trust.read_bytes()
+        if len(pins) > 4096:
+            p.error('handover trust file too large')
+        z.writestr('assets/handover-trust.properties', pins)
     z.write(REPO / 'LICENSE', 'assets/licenses/readb-LICENSE')
     z.write(REPO / 'THIRD-PARTY.md', 'assets/licenses/THIRD-PARTY.md')
     for notice in sorted((REPO / 'licenses').rglob('*')):
