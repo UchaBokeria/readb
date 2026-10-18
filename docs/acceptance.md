@@ -17,6 +17,7 @@ Keep legacy services until the replacement passes device tests and rollback.
 | Android private link | Embedded WireGuard source and packaging | New peer, real VPN handshake and authenticated reports |
 | Secure ADB | Legacy pinned routes remain live | New isolated pairing, first fingerprint review, rotation/reconnect |
 | Keep awake | Policy source and legacy bench service | Migrated-device awake tests; report real lock limits |
+| Low battery alerts | Notifier policy and bridge tests | Migrated-device Hermes send/delivery; avoid overlap with legacy alerts |
 | Restart recovery | Legacy evidence kept separate | Readb boot, locked boot, Wi-Fi consent, report/port recovery |
 | Rollback | Empty-server namespace checks | Per-device credential/profile/VPN rollback |
 | Distribution | Development source and APK | Final signing, release assets, installer and dependency notices |
