@@ -69,6 +69,7 @@ pub mod setup_upgrade;
 
 pub mod setup_upgrade_systemd;
 
+pub mod enrollment_delivery;
 pub mod enrollment_profile;
 
 pub mod enrollment_journal;

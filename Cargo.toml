@@ -11,11 +11,18 @@ publish = false
 readb-protocol = { path = "crates/protocol" }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
-sha2 = "=0.11.1"
+sha2 = { version = "=0.11.1", features = ["zeroize"] }
 subtle = "=2.6.1"
 libc = "=0.2.189"
 clap = { version = "=4.6.7", features = ["derive"] }
 clap_complete = "=4.6.11"
+rsa = { version = "=0.9.10", default-features = false, features = ["std"] }
+aes-gcm = { version = "=0.11.1", default-features = false, features = ["aes", "alloc", "zeroize"] }
+hmac = { version = "=0.13.0", features = ["zeroize"] }
+rand_core = { version = "=0.6.4", features = ["getrandom"] }
+sha2_oaep = { package = "sha2", version = "=0.10.9" }
+sha1_oaep = { package = "sha1", version = "=0.10.6" }
+zeroize = "=1.9.0"
 
 [workspace]
 members = ["crates/protocol", "crates/android-core"]
