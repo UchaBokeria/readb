@@ -947,3 +947,8 @@ dialog .check-row {
     flex: 1 1 100%;
   }
 }
+
+.setup-code { display:block; font-family:ui-monospace,monospace; font-size:clamp(20px,4.8vw,29px); color:var(--accent); padding:18px 12px; border:1px solid var(--border); border-radius:10px; letter-spacing:.035em; user-select:all; overflow-wrap:anywhere; }
+#invite-details p { color:var(--muted); font-size:13px; line-height:1.6; margin-top:16px; }
+#invite-fields>small { display:block; line-height:1.5; margin-top:8px; }
+#invite-dialog input,#invite-dialog select { min-width:0; width:100%; }

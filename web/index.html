@@ -122,6 +122,25 @@
         <footer><button type="button" class="secondary" id="cancel-pair">Cancel</button><button type="submit" class="primary" id="submit-pair">Pair device</button></footer>
       </form>
     </dialog>
+    <dialog id="invite-dialog" aria-labelledby="invite-title">
+      <form id="invite-form" autocomplete="off">
+        <header><div><small>New device</small><h2 id="invite-title">Connect a phone or Quest</h2></div><button type="button" class="icon-button" id="close-invite" aria-label="Close setup">×</button></header>
+        <p>Create a setup code. Enter it in the readb app on your device. No file to move.</p>
+        <div id="invite-fields">
+          <label for="invite-name">Device name</label><input id="invite-name" required maxlength="100" placeholder="My Pixel" />
+          <label for="invite-kind">Device type</label><select id="invite-kind"><option value="phone">Phone</option><option value="quest">Quest</option><option value="android">Other Android device</option></select>
+          <label for="invite-endpoint">Server VPN endpoint</label><input id="invite-endpoint" required placeholder="vpn.example.com:51820" autocapitalize="none" spellcheck="false" maxlength="255" />
+          <small class="muted">The server’s public WireGuard hostname and UDP port. This is different from its dashboard address.</small>
+        </div>
+        <div id="invite-details" hidden>
+          <label for="invite-server">Server address</label><input id="invite-server" readonly />
+          <label for="invite-code">One-use setup code</label><output id="invite-code" class="setup-code"></output>
+          <p id="invite-expiry"></p><p>In the Android app, choose <strong>Connect to server</strong>. After setup, allow readb VPN, start the link and pair secure ADB.</p>
+        </div>
+        <div id="invite-result" class="action-result" role="status" aria-live="polite"></div>
+        <footer><button type="button" class="secondary" id="cancel-invite">Close</button><button type="submit" class="primary" id="submit-invite">Create setup code</button></footer>
+      </form>
+    </dialog>
     <div id="toast" role="status" class="toast" hidden></div>
   </body>
 </html>

@@ -26,6 +26,8 @@ const icon = (kind) =>
   kind === "quest"
     ? '<svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M6 10h20l3 12-5 3-6-5h-4l-6 5-5-3z"/><path d="M10 14h4v4h-4zm8 0h4v4h-4z"/></svg>'
     : '<svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="8" y="3" width="16" height="26" rx="4"/><path d="M13 7h6M14 25h4"/></svg>';
+let inviteAbort = null;
+let inviteGeneration = 0;
 let currentAbort = null;
 let lastImage = null;
 let toastTimer;
@@ -82,6 +84,7 @@ async function api(path, options = {}) {
     if (!response.headers.get("content-type")?.includes("application/json"))
       throw new Error("Dashboard service is unavailable. Try again shortly.");
     const data = await response.json();
+    if (data.code === "setup_blocked") throw new Error(data.message || "Server device setup needs repair. Check readb setup on the server.");
     if (!response.ok || data.error)
       throw new Error(data.error || `Request failed (${response.status}).`);
     return data;
@@ -102,6 +105,7 @@ function showApp() {
   $("#app").hidden = false;
 }
 function signout() {
+  closeInvite();
   sessionStorage.removeItem("readb-key");
   state.key = "";
   $("#app").hidden = true;
@@ -139,6 +143,7 @@ async function refresh(initial = false) {
       !editing &&
       !$("#action-dialog").open &&
       !$("#pair-dialog").open &&
+      !$("#invite-dialog").open &&
       !state.busy &&
       modelKey() !== renderedModel
     )
@@ -217,12 +222,12 @@ function renderDevices() {
     "Your phones and headsets. One place to work.",
     '<input class="search" id="device-search" type="search" placeholder="Find a device" aria-label="Find a device" value="' +
       esc(state.query) +
-      '">',
+      '"><button id="add-device" class="primary">Add device</button>',
   );
   if (!state.devices.length)
     return (
       head +
-      '<section class="empty"><h2>No devices yet.</h2><p>Enroll a device from the CLI, then select Pair device.</p><code>readb device --help</code></section>'
+      '<section class="empty"><h2>No devices yet.</h2><p>Choose Add device. Connect from the Android app with your server address and a setup code.</p></section>'
     );
   return (
     head +
@@ -469,6 +474,7 @@ document.addEventListener("click", (e) => {
     policy(toggle.dataset.policy);
     return;
   }
+  if (e.target.id === "add-device") openInvite();
   if (e.target.id === "open-pair") openPair();
   if (e.target.id === "settings-signout") signout();
 });
@@ -508,3 +514,56 @@ setInterval(() => {
   if (!document.hidden) refresh();
 }, 3000);
 if (state.key) refresh(true);
+
+function closeInvite() {
+  ++inviteGeneration;
+  if (inviteAbort) inviteAbort.abort();
+  inviteAbort = null;
+  $("#invite-code").textContent = "";
+  $("#invite-server").value = "";
+  $("#invite-dialog").close();
+}
+function openInvite() {
+  $("#invite-form").reset();
+  $("#invite-fields").hidden = false;
+  $("#invite-details").hidden = true;
+  $("#submit-invite").hidden = false;
+  $("#submit-invite").disabled = false;
+  $("#invite-result").textContent = "";
+  $("#invite-code").textContent = "";
+  $("#invite-dialog").showModal();
+  $("#invite-name").focus();
+}
+$("#invite-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  if (inviteAbort) return;
+  if (location.protocol !== "https:") {$("#invite-result").textContent = "Open the dashboard at its HTTPS address to connect an Android device.";return;}
+  const generation = ++inviteGeneration;
+  let session = sessionStorage.getItem("readb-setup-session");
+  if (!session) {session = crypto.randomUUID();sessionStorage.setItem("readb-setup-session",session);}
+  const abort = new AbortController();inviteAbort = abort;
+  const timeout = setTimeout(() => abort.abort(), 15000);
+  $("#submit-invite").disabled = true;
+  $("#invite-result").textContent = "Checking the server’s device setup…";
+  try {
+    const result = await api("/api/onboard/invite", {method:"POST",signal:abort.signal,body:JSON.stringify({name:$("#invite-name").value.trim(),kind:$("#invite-kind").value,endpoint:$("#invite-endpoint").value.trim(),client_session:session})});
+    if (generation !== inviteGeneration) return;
+    if (result.schema !== 1 || result.code !== "setup_invitation" || !/^[a-f0-9]{4}(-[a-f0-9]{4}){3}$/.test(result.setup_code) || !Number.isFinite(result.expires_at)) throw new Error("The server returned an incompatible setup reply.");
+    $("#invite-fields").hidden = true;
+    $("#invite-details").hidden = false;
+    $("#submit-invite").hidden = true;
+    $("#invite-server").value = location.origin;
+    $("#invite-code").textContent = result.setup_code;
+    $("#invite-expiry").textContent = `Expires at ${new Date(result.expires_at * 1000).toLocaleTimeString()}. One device only.`;
+    $("#invite-result").textContent = "Keep this window open until you enter the code. Closing hides it; an unused code expires automatically.";
+  } catch (error) {
+    if (generation !== inviteGeneration) return;
+    $("#invite-result").textContent = error.name === "AbortError" ? "The server did not confirm setup. Any unused code will expire. Check the server before trying again." : error.message;
+  } finally {
+    clearTimeout(timeout);
+    if (generation === inviteGeneration) {inviteAbort = null;$("#submit-invite").disabled = false;}
+  }
+});
+$("#close-invite").addEventListener("click",closeInvite);
+$("#cancel-invite").addEventListener("click",closeInvite);
+$("#invite-dialog").addEventListener("cancel",event=>{event.preventDefault();closeInvite();});
