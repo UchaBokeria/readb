@@ -27,6 +27,7 @@ use std::{
 pub enum Call {
     Status,
     ProviderBaseline,
+    EnrollmentFacts,
     Restore,
     Reconcile,
     Apply { request: Request },
@@ -117,6 +118,8 @@ fn handle_recovery_authority(
                 }
                 Ok(result)
             }
+            Call::EnrollmentFacts => serde_json::to_value(m.enrollment_facts(uid, k)?)
+                .map_err(|_| "network_public_facts_encoding_failed".into()),
             Call::ProviderBaseline => {
                 let baseline = m.provider_baseline(uid, k)?;
                 Ok(

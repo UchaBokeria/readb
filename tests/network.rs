@@ -623,3 +623,62 @@ fn provider_rpc_root_namespace_fixture() {
     assert_eq!(k.calls, 1);
     std::fs::remove_dir_all(p).unwrap();
 }
+
+#[test]
+fn enrollment_facts_are_read_only_public_and_reject_wrong_uid_before_kernel() {
+    struct NoKernel;
+    impl Kernel for NoKernel {
+        fn snapshot(&mut self, _: &Policy) -> Result<Snapshot, String> {
+            panic!("unauthorized kernel observation")
+        }
+        fn set(&mut self, _: &Policy, _: &str, _: Option<Ipv4Addr>) -> Result<(), String> {
+            panic!("no writes")
+        }
+    }
+    let p = state();
+    let mut m = Manager::open(&p, policy()).unwrap();
+    let before = std::fs::read(p.join("network.json")).unwrap();
+    let mut k = kernel();
+    assert!(m.enrollment_facts(2000, &mut NoKernel).is_err());
+    let facts = m.enrollment_facts(1000, &mut k).unwrap();
+    facts.validate().unwrap();
+    assert_eq!(facts.policy.first, policy().first);
+    assert_eq!(facts.snapshot, k.snapshot);
+    assert_eq!(k.calls, 0);
+    assert_eq!(before, std::fs::read(p.join("network.json")).unwrap());
+    let value = serde_json::to_value(facts).unwrap();
+    assert!(value.get("private_key").is_none());
+    assert!(value["policy"].get("private_key").is_none());
+    k.fail = true;
+    assert!(m.apply(1000, enroll(), &mut k).is_err());
+    assert!(m.enrollment_facts(1000, &mut NoKernel).is_err());
+    std::fs::remove_dir_all(p).unwrap();
+}
+
+#[test]
+fn enrollment_facts_rpc_uses_actual_socket_credentials_without_mutation() {
+    use std::io::Write;
+    let p = state();
+    let mut policy = policy();
+    policy.uid = unsafe { libc::geteuid() };
+    let mut m = Manager::open(&p, policy).unwrap();
+    let mut k = kernel();
+    let (mut client, mut server) = std::os::unix::net::UnixStream::pair().unwrap();
+    let request = readb::network_runtime::Rpc {
+        schema: 1,
+        request: readb::network_runtime::Call::EnrollmentFacts,
+    };
+    client
+        .write_all(&serde_json::to_vec(&request).unwrap())
+        .unwrap();
+    client.write_all(b"\n").unwrap();
+    readb::network_runtime::handle(&mut server, &mut m, &mut k).unwrap();
+    let bytes = readb::wire::line(&mut client, 65536).unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(value["ok"], true);
+    let facts: readb::enrollment_profile::Facts =
+        serde_json::from_value(value["result"].clone()).unwrap();
+    facts.validate().unwrap();
+    assert_eq!(k.calls, 0);
+    std::fs::remove_dir_all(p).unwrap();
+}

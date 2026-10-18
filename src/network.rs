@@ -469,6 +469,34 @@ impl Manager {
             serde_json::json!({"fenced":self.fenced(),"interface":self.policy.interface,"interface_verified":self.snapshot_valid(&snapshot).is_ok(),"devices":self.state.devices}),
         )
     }
+    /// Selected coordinator (or root) may inspect public enrollment facts only.
+    /// No callback proof is needed for observation; this grants no mutation authority.
+    pub fn enrollment_facts(
+        &self,
+        uid: u32,
+        k: &mut impl Kernel,
+    ) -> Res<crate::enrollment_profile::Facts> {
+        self.policy.admit(uid)?;
+        if self.fenced() {
+            return Err("network_cleanup_unknown: reconcile before enrollment planning".into());
+        }
+        let snapshot = k.snapshot(&self.policy)?;
+        self.snapshot_valid(&snapshot)?;
+        let facts = crate::enrollment_profile::Facts {
+            policy: self.policy.clone(),
+            snapshot,
+            managed: self.state.devices.clone(),
+        };
+        facts.validate()?;
+        if serde_json::to_vec(&facts)
+            .map_err(|_| "network_public_facts_encoding_failed")?
+            .len()
+            > 60000
+        {
+            return Err("network_public_facts_too_large".into());
+        }
+        Ok(facts)
+    }
     /// Root-only read-only provider admission. Exclude only exact recorded peers
     /// after proving healthy state and live ownership. Unknown peers remain in
     /// the external baseline even when occupying the managed range.
