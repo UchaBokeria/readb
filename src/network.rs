@@ -456,6 +456,9 @@ impl Manager {
         }
         Ok(())
     }
+    pub(crate) fn coordinator_uid(&self) -> u32 {
+        self.policy.uid
+    }
     pub(crate) fn authorize(&self, uid: u32) -> Res<()> {
         self.policy.admit(uid)
     }

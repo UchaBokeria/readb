@@ -14,6 +14,7 @@ use std::{
 };
 pub struct Registry {
     pub root: PathBuf,
+    pub network: Arc<crate::network_controller::NetworkController>,
     pub web: Mutex<crate::web::Dashboard>,
     pub config_path: PathBuf,
     pub revision: std::sync::atomic::AtomicU64,
@@ -81,6 +82,7 @@ impl Registry {
         Ok(Self {
             catalog_store: crate::catalog::Store::for_loaded_config(&root, &config_path, &config)?,
             root,
+            network: Arc::new(crate::network_controller::NetworkController::new()),
             config_path,
             revision: std::sync::atomic::AtomicU64::new(1),
             closing: std::sync::atomic::AtomicBool::new(false),

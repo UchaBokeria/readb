@@ -119,3 +119,11 @@ and `reconcile` requests now refuse with `network_controller_proxy_required`.
 A matching UID is not a device controller lease. Root maintenance and status are
 unchanged. Job-scoped coordinator integration is the next step; this is not yet
 replacement enrollment acceptance. Keep existing device services running.
+
+Controller proof (source, not deployed): coordinator journals a device operation
+and retains its one-use nonce. Root checks it over the fixed authority socket
+before a peer write. Both ends check kernel UIDs; proof/reply bind the exact
+request digest. The callback permits no caller-selected path. Root retains only
+NET_ADMIN+CHOWN. Missing authority refuses the request; ordinary ADB can still run.
+A lost/ambiguous peer result requires reconciliation, never blind retry.
+CLI integration and managed upgrade must pass before enabling this on devices.

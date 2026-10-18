@@ -29,6 +29,7 @@ pub enum Call {
     Restore,
     Reconcile,
     Apply { request: Request },
+    Scoped { nonce: String, request: Request },
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -63,6 +64,26 @@ fn handle_recovery(
     k: &mut impl Kernel,
     health: Option<Value>,
 ) -> Res<()> {
+    let authority = crate::network_authority::FixedAuthority {
+        uid: m.coordinator_uid(),
+    };
+    handle_recovery_authority(s, m, k, health, &authority)
+}
+pub fn handle_authority(
+    s: &mut UnixStream,
+    m: &mut Manager,
+    k: &mut impl Kernel,
+    authority: &impl crate::network_authority::Authority,
+) -> Res<()> {
+    handle_recovery_authority(s, m, k, None, authority)
+}
+fn handle_recovery_authority(
+    s: &mut UnixStream,
+    m: &mut Manager,
+    k: &mut impl Kernel,
+    health: Option<Value>,
+    authority: &impl crate::network_authority::Authority,
+) -> Res<()> {
     s.set_read_timeout(Some(Duration::from_secs(2)))
         .map_err(|_| "network_socket_timeout_failed")?;
     s.set_write_timeout(Some(Duration::from_secs(2)))
@@ -89,6 +110,7 @@ fn handle_recovery(
                     }
                     Err(error) => return Err(error),
                 };
+                result["scoped_controller"] = json!(true);
                 if let Some(health) = health {
                     result["recovery"] = health;
                 }
@@ -107,6 +129,26 @@ fn handle_recovery(
                 }
                 m.reconcile(uid, k)?;
                 Ok(json!({"reconciled":true}))
+            }
+            Call::Scoped { nonce, request } => {
+                // Restore/reconcile are explicit host maintenance, never scoped user requests.
+                if matches!(request, Request::Restore { .. }) {
+                    return Ok(
+                        json!({"outcome":"refused","error":"network_restore_requires_root_maintenance"}),
+                    );
+                }
+                let digest = crate::network_controller::request_digest(&request)?;
+                if authority.check(&nonce, &digest).is_err() {
+                    return Ok(
+                        json!({"outcome":"refused","error":"network_controller_proof_refused"}),
+                    );
+                }
+                match m.apply(uid, request, k) {
+                    Ok(()) => Ok(json!({"outcome":"applied"})),
+                    Err(error) => Ok(
+                        json!({"outcome":if m.fenced(){"uncertain"}else{"refused"},"error":error}),
+                    ),
+                }
             }
             Call::Apply { request } => {
                 if uid != 0 {
@@ -379,6 +421,7 @@ pub fn serve(policy_path: &Path, state: &Path) -> Res<()> {
     if unsafe { libc::chown(name.as_ptr(), p.uid, u32::MAX) } != 0 {
         return Err("network_socket_owner_failed".into());
     }
+    crate::network_authority::prepare_directory(p.uid)?;
     let mut manager = Manager::open(state, p)?;
     let mut kernel = LinuxKernel::new()?;
     socket

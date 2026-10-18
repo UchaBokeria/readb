@@ -238,6 +238,7 @@ pub fn serve(r: Arc<Registry>, stop: Arc<AtomicBool>) -> Res<()> {
         .map_err(|_| "control_permissions_failed")?;
     unix.set_nonblocking(true)
         .map_err(|_| "control_setup_failed")?;
+    let _network_authority = crate::network_authority::Server::start(r.network.clone());
     crate::web::restore(r.clone());
     let mut listeners: BTreeMap<std::net::SocketAddr, TcpListener> = BTreeMap::new();
     let mut revision = 0;

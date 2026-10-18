@@ -204,3 +204,10 @@ uncertain completion.230 host and230 Rust1.88/musl tests, fmt/Clippy pass. An
 initial musl end-to-end spawn failed during concurrent validation; a fresh full
 run passed, exact OS cause unconfirmed. Socket/root/CLI integration is next;
 these controller changes are not deployed and no new peer/device was enrolled.
+
+Controller root proof source now passes238host+238Rust1.88/musl, fmt/Clippy and
+independent scoped review. Actual Blackwall private mount/network namespace proves
+callback access with only NET_ADMIN+CHOWN, unsafe directory refusal, competing
+binder refusal, stale recovery and replacement-inode-safe shutdown. Restricted
+root chmod-after-chown failure was reproduced before its fix. This is not deployed.
+CLI/controller RPC completion and managed upgrade remain next; legacy stays live.
