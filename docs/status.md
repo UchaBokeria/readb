@@ -136,3 +136,7 @@ service. Review fixes cover recovered-file fsync, replaced receipts across resta
 and best-effort pending-fence restoration after failed cleanup sync. Host182tests,
 Rust1.88 musl182tests, JNI/stale-callback checks and fmt/Clippy pass. Full setup
 activation, network runtime recovery and encrypted device migration remain open.
+
+Portable4.2MB musl release passed isolated Blackwall user install/reload-failure/
+explicit-recovery checks with temporary HOME and fake manager. No live service or
+device change. Source c94a538; full migration gates above remain open.
