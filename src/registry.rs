@@ -145,6 +145,46 @@ impl Registry {
             .map(|(id, b)| (id.clone(), b.clone()))
             .collect()
     }
+    /// Resolve the device and start its controller operation under the catalog
+    /// lock. An independently supplied Backend cannot be relabeled as a peer.
+    pub(crate) fn begin_network_operation(
+        &self,
+        ticket: &str,
+        id: &str,
+        request: &crate::network::Request,
+    ) -> Res<(Arc<Backend>, String)> {
+        if !valid_id(id) {
+            return Err("invalid_network_device".into());
+        }
+        let c = self.catalog.lock().unwrap();
+        if self.closing.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err("coordinator_shutdown".into());
+        }
+        self.catalog_store.preflight()?;
+        let backend = c.devices.get(id).cloned().ok_or("unknown_device")?;
+        let device = c
+            .config
+            .devices
+            .iter()
+            .find(|d| d.id == id)
+            .ok_or("registry_device_scope_inconsistent")?;
+        if backend.config.peer != device.peer {
+            return Err("registry_device_scope_inconsistent".into());
+        }
+        let label = match request {
+            crate::network::Request::Enroll {
+                id: requested,
+                key,
+                address,
+            } if requested == id && *address == device.peer && crate::network::valid_key(key) => {
+                "network-enroll"
+            }
+            crate::network::Request::Remove { id: requested } if requested == id => "network-rm",
+            _ => return Err("network_request_scope_mismatch".into()),
+        };
+        let operation = backend.begin_network(ticket, label)?;
+        Ok((backend, operation))
+    }
     pub fn status(&self) -> Value {
         let c = self.catalog.lock().unwrap();
         json!({"schema":1,"pid":std::process::id(),"catalog_cleanup_unknown":self.catalog_store.fenced(),"listener_errors":*self.listener_errors.lock().unwrap(),"devices":c.config.devices.iter().map(|d|{let mut v=c.devices[&d.id].status();v["id"]=json!(d.id);v["name"]=json!(d.name);v["kind"]=json!(d.kind);v}).collect::<Vec<_>>()})

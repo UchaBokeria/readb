@@ -196,3 +196,11 @@ not the shorter `ps` response.217 host and217 Rust1.88/musl workspace tests plus
 Clippy/fmt pass. A failed initial empty staging journal was retained separately;
 no device, key or previous service was removed. This is setup acceptance only:
 companion enrollment, encrypted handover and per-device cutover remain open.
+
+October18 controller-scope prerequisite: durable network operations work before
+ADB exists, bind actual registry device/request and exclude active/new viewers
+and keepalive. One-use request proofs preserve fences on drop, expiry and
+uncertain completion.230 host and230 Rust1.88/musl tests, fmt/Clippy pass. An
+initial musl end-to-end spawn failed during concurrent validation; a fresh full
+run passed, exact OS cause unconfirmed. Socket/root/CLI integration is next;
+these controller changes are not deployed and no new peer/device was enrolled.

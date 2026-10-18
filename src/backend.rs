@@ -61,6 +61,7 @@ pub struct Config {
 }
 pub struct Operation {
     pub pairing: bool,
+    pub network: bool,
     pub id: String,
     pub command: String,
     pub observer: bool,
@@ -351,6 +352,9 @@ impl Backend {
             return Err("coordinator_shutdown".into());
         }
         Ok(())
+    }
+    fn network_active(s: &State) -> bool {
+        s.operations.values().any(|op| op.network)
     }
     pub fn battery_sample(&self) -> crate::notifier::BatterySample {
         let s = self.state.lock().unwrap();
@@ -701,6 +705,9 @@ impl Backend {
     }
     fn report_admission(s: &State) -> Res<()> {
         Self::check_running(s)?;
+        if Self::network_active(s) {
+            return Err("network_change_in_progress: retry the report after completion".into());
+        }
         if s.operations.values().any(|op| op.pairing) {
             return Err("pairing_in_progress".into());
         }
@@ -890,10 +897,75 @@ impl Backend {
         atomic(&self.config.dir.join("last-report.json"), &s.receipt)?;
         Ok(connected)
     }
+    /// Network setup must work before ADB is paired or reachable. This grants
+    /// no kernel authority; the coordinator still needs a bound root proof.
+    pub fn begin_network(&self, t: &str, label: &str) -> Res<String> {
+        if !matches!(label, "network-enroll" | "network-rm") {
+            return Err("invalid_network_operation".into());
+        }
+        let _transport = self.transport.lock().unwrap();
+        let mut s = self.state.lock().unwrap();
+        Self::check_running(&s)?;
+        s.gate.authorize(t, lease_now())?;
+        if s.viewers.values().any(|v| v.active) {
+            return Err("network_viewer_operation_busy: wait for active viewers".into());
+        }
+        s.gate.begin(t, lease_now(), false)?;
+        let id = random();
+        let record = json!({"generation":s.generation,"job":s.gate.lease,
+            "pure":false,"started":true,"kind":"network","operation":id});
+        if let Err(e) = atomic(&self.config.dir.join("active-operation.json"), &record) {
+            s.gate.cancel("network_intent_persistence_failed");
+            let _ = self.persist_fence(&s);
+            s.gate.finish();
+            return Err(e);
+        }
+        s.operations.insert(
+            t.into(),
+            Operation {
+                pairing: false,
+                network: true,
+                id: id.clone(),
+                command: label.into(),
+                observer: false,
+            },
+        );
+        if let Err(e) = crate::events::append(
+            &self.config.dir,
+            &crate::events::Event::new("start", &id, label, "control", "network-pending"),
+        ) {
+            s.gate.cancel("network_history_persistence_failed");
+            let _ = self.persist_fence(&s);
+            s.gate.finish();
+            s.operations.remove(t);
+            return Err(e);
+        }
+        Ok(id)
+    }
+    pub fn authorize_network(&self, t: &str, operation: &str) -> Res<()> {
+        let mut s = self.state.lock().unwrap();
+        Self::check_running(&s)?;
+        if !s.gate.active
+            || !s
+                .operations
+                .get(t)
+                .is_some_and(|op| op.network && op.id == operation)
+        {
+            return Err("network_operation_not_active".into());
+        }
+        if let Err(e) = s.gate.authorize(t, lease_now()) {
+            self.persist_fence(&s)?;
+            return Err(e);
+        }
+        Ok(())
+    }
     pub fn prepare(&self, t: &str, args: Vec<String>) -> Res<Prepared> {
         let _transport = self.transport.lock().unwrap();
         let mut s = self.state.lock().unwrap();
         Self::check_running(&s)?;
+        if Self::network_active(&s) {
+            return Err("network_change_in_progress: wait before issuing ADB commands".into());
+        }
         let observer = s.viewers.contains_key(t);
         if s.gate.cleanup_unknown.is_some() {
             return Err("cleanup_unknown".into());
@@ -985,6 +1057,7 @@ impl Backend {
             t.into(),
             Operation {
                 pairing,
+                network: false,
                 id: random(),
                 command: if args[0] == "shell" || args[0] == "exec-out" {
                     args.get(1).cloned().unwrap_or_default()
@@ -1024,6 +1097,9 @@ impl Backend {
         let _transport = self.transport.lock().unwrap();
         let mut s = self.state.lock().unwrap();
         Self::check_running(&s)?;
+        if Self::network_active(&s) {
+            return Err("network_change_in_progress: no ADB command started".into());
+        }
         let observer = s.viewers.contains_key(t);
         if s.gate.cleanup_unknown.is_some() {
             return Err("cleanup_unknown".into());
@@ -1076,6 +1152,7 @@ impl Backend {
         let mut s = self.state.lock().unwrap();
         let pairing = s.operations.get(t).is_some_and(|op| op.pairing);
         if s.stopping
+            || Self::network_active(&s)
             || (!pairing && !s.receipt.fresh(now()))
             || s.gate.cleanup_unknown.is_some()
             || s.generation != generation
@@ -1116,6 +1193,32 @@ impl Backend {
     }
     pub fn complete_result(&self, t: &str, cancelled: bool, outcome: &str) {
         let mut s = self.state.lock().unwrap();
+        self.complete_result_locked(&mut s, t, cancelled, outcome)
+    }
+    pub fn finish_network(
+        &self,
+        t: &str,
+        operation: &str,
+        cancelled: bool,
+        outcome: &str,
+    ) -> Res<()> {
+        let mut s = self.state.lock().unwrap();
+        if !s
+            .operations
+            .get(t)
+            .is_some_and(|op| op.network && op.id == operation)
+        {
+            return Err("network_operation_not_active".into());
+        }
+        self.complete_result_locked(&mut s, t, cancelled, outcome);
+        if s.gate.cleanup_unknown.is_some() {
+            return Err(
+                "network_completion_fenced: inspect device and root state before retry".into(),
+            );
+        }
+        Ok(())
+    }
+    fn complete_result_locked(&self, s: &mut State, t: &str, cancelled: bool, outcome: &str) {
         if let Some(op) = s.operations.remove(t)
             && crate::events::append(
                 &self.config.dir,
@@ -1135,7 +1238,7 @@ impl Backend {
             if let Some(v) = s.viewers.get_mut(t) {
                 v.active = false;
             }
-            if self.persist_fence(&s).is_err() {
+            if self.persist_fence(s).is_err() {
                 s.gate.cleanup_unknown = Some("state_persistence_failed".into());
             }
             if s.gate.cleanup_unknown.is_none() && fs::remove_file(self.viewer_journal(t)).is_err()
@@ -1147,15 +1250,10 @@ impl Backend {
             }
             return;
         }
-        drop(s);
-        self.complete_control(cancelled)
-    }
-    fn complete_control(&self, cancelled: bool) {
-        let mut s = self.state.lock().unwrap();
         if cancelled {
             s.gate.cancel("command_cancelled_or_timed_out");
         }
-        if self.persist_fence(&s).is_err() {
+        if self.persist_fence(s).is_err() {
             s.gate.cleanup_unknown = Some("state_persistence_failed".into());
         }
         s.gate.finish();
@@ -1188,6 +1286,7 @@ impl Backend {
         };
         let s = self.state.lock().unwrap();
         if s.stopping
+            || Self::network_active(&s)
             || !s.keepalive.enabled
             || !s.receipt.fresh(now())
             || s.gate.cleanup_unknown.is_some()

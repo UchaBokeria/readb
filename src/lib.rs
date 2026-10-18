@@ -58,3 +58,5 @@ pub mod setup_provider;
 pub mod setup_activation;
 
 pub mod setup_systemd;
+
+pub mod network_controller;
