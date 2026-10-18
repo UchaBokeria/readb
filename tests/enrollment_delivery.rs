@@ -22,6 +22,8 @@ fn java_recipient_rust_envelope_authenticated_receipts_and_exact_recovery() {
         root.to_str().unwrap(),
         "android/src/dev/readb/handover/EnrollmentDelivery.java",
         "android/tests/host/EnrollmentDeliveryTest.java",
+        "android/src/dev/readb/handover/EnrollmentJournal.java",
+        "android/tests/host/EnrollmentJournalTest.java",
     ]));
     run(Command::new("java").args([
         "-cp",
@@ -90,6 +92,12 @@ fn java_recipient_rust_envelope_authenticated_receipts_and_exact_recovery() {
         "final",
         root.to_str().unwrap(),
     ]));
+    run(Command::new("java").args([
+        "-cp",
+        root.to_str().unwrap(),
+        "EnrollmentJournalTest",
+        root.to_str().unwrap(),
+    ]));
     let other = Context::new(&"a".repeat(64), "other-device", &"b".repeat(64)).unwrap();
     let other_delivery = Prepared::seal(&other, &request, &profile).err();
     assert!(
@@ -125,4 +133,22 @@ fn context_is_canonical_bounded_and_errors_do_not_echo_private_input() {
             .unwrap()
             .contains("delivery")
     );
+}
+
+#[test]
+fn pending_android_enrollment_gates_every_profile_activation_and_import() {
+    let profile = include_str!("../android/src/dev/readb/companion/ProfileStore.java");
+    assert!(profile.contains(
+        "if(EnrollmentStore.present(c))throw new IOException(\"enrollment_delivery_in_progress\")"
+    ));
+    assert!(profile.contains("if(EnrollmentStore.present(c))return loadDelivered(c)"));
+    assert!(
+        profile.contains("static synchronized boolean serviceStarting(Context c,Object service)")
+    );
+    for service in [
+        include_str!("../android/src/dev/readb/companion/ReportService.java"),
+        include_str!("../android/src/dev/readb/companion/BootVpnService.java"),
+    ] {
+        assert!(service.contains("if(!ProfileStore.serviceStarting(this,this))"));
+    }
 }

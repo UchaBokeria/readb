@@ -15,6 +15,7 @@ public final class BootVpnService extends GoBackend.VpnService {
     private int failures;
     private long nextAttempt;
     private volatile boolean revoked;
+    private boolean admitted;
     private ConnectivityManager connectivity;
     private ConnectivityManager.NetworkCallback networks;
     private final Tunnel tunnel = new Tunnel() {
@@ -32,10 +33,11 @@ public final class BootVpnService extends GoBackend.VpnService {
     }
 
     @Override public void onCreate() {
-        ProfileStore.serviceStarting(this);
         createDeviceProtectedStorageContext().getSharedPreferences("status",0).edit().putBoolean("vpn_active",false).apply();
         // Completes GoBackend's service future before any backend can attempt explicit startup.
         actor.initialize(() -> BootVpnService.super.onCreate());
+        if(!ProfileStore.serviceStarting(this,this)) { stopSelf();return; }
+        admitted=true;
         NotificationManager manager = getSystemService(NotificationManager.class);
         manager.createNotificationChannel(new NotificationChannel("readb-vpn", "readb VPN", NotificationManager.IMPORTANCE_LOW));
         PendingIntent open = PendingIntent.getActivity(this, 2, new Intent(this, MainActivity.class), PendingIntent.FLAG_IMMUTABLE);
@@ -78,6 +80,7 @@ public final class BootVpnService extends GoBackend.VpnService {
     }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
+        if(!admitted){stopSelf();return START_NOT_STICKY;}
         actor.execute(() -> BootVpnService.super.onStartCommand(intent, flags, startId));
         return START_STICKY;
     }

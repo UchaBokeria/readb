@@ -26,6 +26,7 @@ public final class ReportService extends Service {
     private NsdManager.DiscoveryListener discovery;
     private ConnectivityManager connectivity;
     private ConnectivityManager.NetworkCallback networks;
+    private boolean admitted;
     private boolean inflight, discovering;
     private String ownService;
     private final ServiceTracker services=new ServiceTracker();
@@ -43,7 +44,8 @@ public final class ReportService extends Service {
     private JSONObject request(String op) throws Exception { return new JSONObject().put("op",op).put("handle",handle).put("now",now()); }
     @Override public void onCreate() {
         super.onCreate();
-        ProfileStore.serviceStarting(this);
+        if(!ProfileStore.serviceStarting(this,this)) { stopSelf();return; }
+        admitted=true;
         NotificationManager nm=getSystemService(NotificationManager.class);
         nm.createNotificationChannel(new NotificationChannel("readb-report","readb reporting",NotificationManager.IMPORTANCE_LOW));
         PendingIntent open=PendingIntent.getActivity(this,1,new Intent(this,MainActivity.class),PendingIntent.FLAG_IMMUTABLE);
@@ -184,7 +186,7 @@ public final class ReportService extends Service {
             actor.postDelayed(()->{if(!closed.get() && discoveryGeneration==epoch && seenGeneration!=epoch){ownService=null;port(null);}},12000);
         } catch(RuntimeException e) { port(null);status("Discovery unavailable. Check permissions."); }
     }
-    @Override public int onStartCommand(Intent i,int flags,int id) { return START_STICKY; }
+    @Override public int onStartCommand(Intent i,int flags,int id) { if(!admitted){stopSelf();return START_NOT_STICKY;}return START_STICKY; }
     @Override public IBinder onBind(Intent i) { return null; }
     @Override public void onDestroy() {
         if(!closed.compareAndSet(false,true))return;

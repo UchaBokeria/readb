@@ -5,13 +5,19 @@ firewall, enrollment finalization or device acceptance is implemented here.
 
 ## Trust and scope
 
-First migration uses the already verified/pinned ADB device route. A later,
-default-inactive Android bridge must check the actual Binder shell/root UID on
-every transaction; verify installed readb certificate and exact component first.
-It streams a public request, ciphertext and authenticated receipts only. No
-plaintext profile in shared storage, argv, extras, logs or dashboard responses.
-Future HTTPS/dashboard adapters must establish equivalent sender/recipient trust;
-encryption alone authenticates neither endpoint. Never expose a general decryptor.
+Standard first-user setup uses a verified HTTPS server URL and short-lived one-use
+setup code issued by the administrator. Before network, Android durably retains
+its exact recipient request and random private resume credential; the server
+binds that request to the invitation and checks the resume credential. No setup
+file or ADB bridge is required for this path. Never put secrets in URLs, shared
+storage, argv, extras, logs or dashboard status responses. Encryption alone does
+not authenticate the sender or recipient; verified TLS and session binding remain
+required. Never expose a general decryptor.
+
+A pinned ADB migration bridge is an advanced deferred adapter. If implemented,
+it must check actual Binder shell/root UID on every transaction and verify the
+installed certificate/component, transporting only public requests, ciphertext
+and authenticated receipts. It is not the default onboarding requirement.
 
 Only the original enrollment owner may bind a receive request. Delivery starts
 after exact peer/firewall/listener readiness. Keep the pending-device barrier
