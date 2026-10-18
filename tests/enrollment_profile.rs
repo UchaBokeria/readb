@@ -145,7 +145,7 @@ fn material_uses_real_bounded_wireguard_keygen_and_matches_private_companion_and
     assert!(import.device.identity.is_empty());
     assert_eq!(import.listener.unwrap().path, profile.report_path());
     let saved = material.private_bytes().unwrap();
-    let restored = Material::from_private(&saved).unwrap();
+    let restored = Material::from_private(&saved, "/usr/bin/wg".as_ref()).unwrap();
     assert!(private == restored.profile_bytes().unwrap());
     let public = material.public_view();
     let text = serde_json::to_string(&public).unwrap();
@@ -156,14 +156,33 @@ fn missing_untrusted_keygen_and_corrupt_private_material_are_credential_free_err
     let p = plan(&facts(), &config(), &request(), &[], &BTreeSet::new()).unwrap();
     assert!(Material::generate(p.clone(), "/does-not-exist/wg".as_ref()).is_err());
     assert!(
-        Material::from_private(br#"{"schema":1,"token":"must-not-appear-in-error"}"#)
-            .err()
-            .unwrap()
-            .find("must-not-appear")
-            .is_none()
+        Material::from_private(
+            br#"{"schema":1,"token":"must-not-appear-in-error"}"#,
+            "/usr/bin/wg".as_ref()
+        )
+        .err()
+        .unwrap()
+        .find("must-not-appear")
+        .is_none()
     );
     let m = Material::generate(p, "/usr/bin/wg".as_ref()).unwrap();
     let mut v: serde_json::Value = serde_json::from_slice(&m.private_bytes().unwrap()).unwrap();
     v["token"] = serde_json::json!("bad");
-    assert!(Material::from_private(&serde_json::to_vec(&v).unwrap()).is_err());
+    assert!(
+        Material::from_private(&serde_json::to_vec(&v).unwrap(), "/usr/bin/wg".as_ref()).is_err()
+    );
+}
+#[test]
+fn private_recovery_rejects_individually_valid_but_mismatched_wireguard_keys() {
+    let m = Material::generate(
+        plan(&facts(), &config(), &request(), &[], &BTreeSet::new()).unwrap(),
+        "/usr/bin/wg".as_ref(),
+    )
+    .unwrap();
+    let mut saved: serde_json::Value = serde_json::from_slice(&m.private_bytes().unwrap()).unwrap();
+    saved["public_key"] = serde_json::json!(key('C'));
+    assert!(
+        Material::from_private(&serde_json::to_vec(&saved).unwrap(), "/usr/bin/wg".as_ref())
+            .is_err()
+    );
 }

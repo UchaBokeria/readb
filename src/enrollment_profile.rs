@@ -354,6 +354,16 @@ fn key_output(mut output: crate::runner::Captured) -> Res<String> {
     output.err.fill(0);
     result.ok_or_else(|| "enrollment_keygen_invalid_output".into())
 }
+fn derive_public(private_key: &str, wg: &Path) -> Res<String> {
+    let tool = keygen_tool(wg)?;
+    let mut input = private_key.as_bytes().to_vec();
+    input.push(b'\n');
+    let mut command = Command::new(&tool);
+    command.arg("pubkey");
+    let generated = crate::runner::capture_cmd_input(command, &input, Duration::from_secs(5), 256);
+    input.fill(0);
+    key_output(generated.map_err(|_| "enrollment_keygen_failed")?)
+}
 impl Material {
     pub fn generate(plan: Plan, wg: &Path) -> Res<Self> {
         plan.validate()?;
@@ -364,14 +374,7 @@ impl Material {
             crate::runner::capture_cmd(command, Duration::from_secs(5), 256)
                 .map_err(|_| "enrollment_keygen_failed")?,
         )?;
-        let mut input = private_key.as_bytes().to_vec();
-        input.push(b'\n');
-        let mut command = Command::new(&tool);
-        command.arg("pubkey");
-        let generated =
-            crate::runner::capture_cmd_input(command, &input, Duration::from_secs(5), 256);
-        input.fill(0);
-        let public_key = key_output(generated.map_err(|_| "enrollment_keygen_failed")?)?;
+        let public_key = derive_public(&private_key, &tool)?;
         let material = Self {
             stored: StoredMaterial {
                 schema: 1,
@@ -415,7 +418,18 @@ impl Material {
         self.validate()?;
         serde_json::to_vec(&self.stored).map_err(|_| "enrollment_private_encoding_failed".into())
     }
-    pub fn from_private(bytes: &[u8]) -> Res<Self> {
+    pub fn from_private(bytes: &[u8], wg: &Path) -> Res<Self> {
+        let material = Self::shape_from_private(bytes)?;
+        let derived = derive_public(&material.stored.private_key, wg)?;
+        if derived != material.stored.public_key {
+            return Err("enrollment_keypair_mismatch".into());
+        }
+        Ok(material)
+    }
+    // Admission-only parsing. Never export or apply material from this unchecked
+    // representation; delivery/catalog effects require from_private with the
+    // administrator's trusted tool, not an executable supplied in private data.
+    pub(crate) fn shape_from_private(bytes: &[u8]) -> Res<Self> {
         if bytes.len() > 8192 {
             return Err("enrollment_private_material_too_large".into());
         }
