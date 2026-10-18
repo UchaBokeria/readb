@@ -82,6 +82,7 @@ pub struct State {
     pub paused: bool,
     pub stopping: bool,
     pub maintenance: bool,
+    pub(crate) enrollment: Option<String>,
     pub gate: Gate,
     pub receipt: Receipt,
     pub target: Option<u16>,
@@ -95,6 +96,7 @@ pub struct Backend {
     identity: Mutex<String>,
     managed_server: std::sync::atomic::AtomicBool,
     server_closed: std::sync::atomic::AtomicBool,
+    enrollment_closed: std::sync::atomic::AtomicBool,
     server: Mutex<Option<crate::adb_server::ManagedServer>>,
 }
 pub struct Prepared {
@@ -149,6 +151,8 @@ impl Backend {
         } else {
             false
         };
+        let enrollment = crate::enrollment_journal::barrier(&config.dir)?;
+        let enrollment_closed = enrollment.is_some();
         Ok(Self {
             identity: Mutex::new(config.identity.clone()),
             config,
@@ -161,6 +165,7 @@ impl Backend {
                 paused,
                 stopping: false,
                 maintenance: false,
+                enrollment,
                 gate,
                 receipt: Receipt::default(),
                 target: None,
@@ -170,6 +175,7 @@ impl Backend {
             transport: Mutex::new(()),
             managed_server: std::sync::atomic::AtomicBool::new(false),
             server_closed: std::sync::atomic::AtomicBool::new(false),
+            enrollment_closed: std::sync::atomic::AtomicBool::new(enrollment_closed),
             server: Mutex::new(None),
         })
     }
@@ -353,6 +359,11 @@ impl Backend {
         if s.stopping {
             return Err("coordinator_shutdown".into());
         }
+        if s.enrollment.is_some() {
+            return Err(
+                "enrollment_pending: recover original enrollment before device work".into(),
+            );
+        }
         if s.maintenance {
             return Err("coordinator_maintenance: upgrade pending".into());
         }
@@ -403,9 +414,10 @@ impl Backend {
         } else {
             "unmanaged_library"
         };
-        let connected =
-            s.receipt.fresh(now()) && matches!(server_state, "running" | "unmanaged_library");
-        let mut value = json!({"identity_configured":!self.identity.lock().unwrap().is_empty(),"paused":s.paused,"stopping":s.stopping,"connected":connected,"identity_verified":connected,"adb_server_state":server_state,"report_age_seconds":if s.receipt.received_at>0.{Some(now()-s.receipt.received_at)}else{None},"battery":s.receipt.battery,"adb_server_port":self.config.adb_port,"viewers":s.viewers.values().map(|v|json!({"owner":v.owner,"active":v.active,"remaining_seconds":(v.expires-lease_now()).max(0.)})).collect::<Vec<_>>(),"keepalive_policy":s.keepalive,"job":s.gate.lease,"lease_age_seconds":s.gate.lease.as_ref().map(|l|(lease_now()-l.started).max(0.)),"lease_remaining_seconds":s.gate.lease.as_ref().map(|l|(l.expires-lease_now()).max(0.)),"operation_running":s.gate.active,"cleanup_unknown":s.gate.cleanup_unknown,"generation":s.generation,"last_job":s.gate.last_owner,"cancel_reason":s.gate.cancel_reason});
+        let connected = s.enrollment.is_none()
+            && s.receipt.fresh(now())
+            && matches!(server_state, "running" | "unmanaged_library");
+        let mut value = json!({"identity_configured":!self.identity.lock().unwrap().is_empty(),"enrollment_pending":s.enrollment.is_some(),"paused":s.paused,"stopping":s.stopping,"connected":connected,"identity_verified":connected,"adb_server_state":server_state,"report_age_seconds":if s.receipt.received_at>0.{Some(now()-s.receipt.received_at)}else{None},"battery":s.receipt.battery,"adb_server_port":self.config.adb_port,"viewers":s.viewers.values().map(|v|json!({"owner":v.owner,"active":v.active,"remaining_seconds":(v.expires-lease_now()).max(0.)})).collect::<Vec<_>>(),"keepalive_policy":s.keepalive,"job":s.gate.lease,"lease_age_seconds":s.gate.lease.as_ref().map(|l|(lease_now()-l.started).max(0.)),"lease_remaining_seconds":s.gate.lease.as_ref().map(|l|(l.expires-lease_now()).max(0.)),"operation_running":s.gate.active,"cleanup_unknown":s.gate.cleanup_unknown,"generation":s.generation,"last_job":s.gate.last_owner,"cancel_reason":s.gate.cancel_reason});
         if let Some((received, report)) = &s.companion {
             value["companion"] = json!({"reported":true,"age_seconds":now()-received,"observed":report.observed,"tls_port_available":report.port.is_some()});
         }
@@ -420,6 +432,23 @@ impl Backend {
             value["maintenance"] = m;
         }
         value
+    }
+    pub(crate) fn verify_enrollment(&self, expected: Option<&str>) -> Res<()> {
+        let _transport = self.transport.lock().unwrap();
+        let disk = crate::enrollment_journal::barrier(&self.config.dir)?;
+        let mut state = self.state.lock().unwrap();
+        if state.enrollment.is_some() || disk.is_some() || expected.is_some() {
+            self.enrollment_closed
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            // Cached admission never reopens merely because a record disappears.
+            if state.enrollment.is_none() {
+                state.enrollment = disk.clone().or_else(|| expected.map(str::to_owned));
+            }
+            if state.enrollment.as_deref() != expected || disk.as_deref() != expected {
+                return Err("enrollment_barrier_changed: preserve pending device state".into());
+            }
+        }
+        Ok(())
     }
     pub fn claim(&self, o: Owner, ttl: u64) -> Res<String> {
         let _maintenance = self.transport.lock().unwrap();
@@ -547,6 +576,12 @@ impl Backend {
             .store(true, std::sync::atomic::Ordering::SeqCst);
     }
     fn ensure_owned_server(&self, restart: bool) -> Res<()> {
+        if self
+            .enrollment_closed
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err("enrollment_pending: owned ADB server not started".into());
+        }
         if self.server_closed.load(std::sync::atomic::Ordering::SeqCst) {
             return Err("owned_adb_server_closed".into());
         }
@@ -1204,6 +1239,7 @@ impl Backend {
         let pairing = s.operations.get(t).is_some_and(|op| op.pairing);
         if s.stopping
             || s.maintenance
+            || s.enrollment.is_some()
             || Self::network_active(&s)
             || (!pairing && !s.receipt.fresh(now()))
             || s.gate.cleanup_unknown.is_some()
@@ -1339,6 +1375,7 @@ impl Backend {
         let s = self.state.lock().unwrap();
         if s.stopping
             || s.maintenance
+            || s.enrollment.is_some()
             || Self::network_active(&s)
             || !s.keepalive.enabled
             || !s.receipt.fresh(now())

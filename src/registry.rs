@@ -65,11 +65,15 @@ impl Registry {
         private_dir(&root)?;
         let base = root.join("devices");
         private_dir(&base)?;
+        let enrollments = crate::enrollment_journal::inspect(&root)?;
         let mut devices = BTreeMap::new();
         let mut notifiers = BTreeMap::new();
         for d in &config.devices {
             let dir = base.join(&d.id);
             private_dir(&dir)?;
+            if let Some(record) = enrollments.get(&d.id) {
+                crate::enrollment_journal::publish_barrier(&dir, record.transaction())?;
+            }
             let b = Backend::new(Config {
                 dir,
                 adb: config.adb.clone(),
@@ -107,8 +111,17 @@ impl Registry {
                 notifiers,
             }),
         };
+        registry.refresh_enrollments()?;
         registry.refresh_maintenance()?;
         Ok(registry)
+    }
+    pub fn refresh_enrollments(&self) -> Res<()> {
+        let records = crate::enrollment_journal::inspect(&self.root)?;
+        let catalog = self.catalog.lock().unwrap();
+        for (id, backend) in &catalog.devices {
+            backend.verify_enrollment(records.get(id).map(|r| r.transaction()))?;
+        }
+        Ok(())
     }
     pub fn config_fingerprint(&self) -> Res<String> {
         fingerprint(&self.catalog.lock().unwrap().config)
@@ -384,6 +397,9 @@ impl Registry {
         json!({"schema":1,"pid":std::process::id(),"config_fingerprint":fingerprint(&c.config).ok(),"maintenance":*self.maintenance.lock().unwrap(),"catalog_cleanup_unknown":self.catalog_store.fenced(),"listener_errors":*self.listener_errors.lock().unwrap(),"devices":c.config.devices.iter().map(|d|{let mut v=c.devices[&d.id].status();v["id"]=json!(d.id);v["name"]=json!(d.name);v["kind"]=json!(d.kind);v}).collect::<Vec<_>>()})
     }
     pub fn add(&self, d: Device, listener: Option<Listener>) -> Res<Value> {
+        if crate::enrollment_journal::inspect(&self.root)?.contains_key(&d.id) {
+            return Err("enrollment_pending: use original typed enrollment transaction".into());
+        }
         let mut c = self.catalog.lock().unwrap();
         if self.closing.load(std::sync::atomic::Ordering::SeqCst) {
             return Err("coordinator_shutdown".into());

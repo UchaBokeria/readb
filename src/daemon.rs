@@ -301,6 +301,7 @@ fn report(mut s: TcpStream, peer: std::net::IpAddr, r: Arc<Registry>, bind: std:
 
 pub fn serve(r: Arc<Registry>, stop: Arc<AtomicBool>) -> Res<()> {
     let _catalog_runtime = crate::catalog::runtime_lock(&r.root, &r.config_path)?;
+    r.refresh_enrollments()?;
     r.refresh_maintenance()?;
     r.enable_owned_servers();
     let path = r.root.join("control.sock");

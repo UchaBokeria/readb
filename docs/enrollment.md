@@ -1,7 +1,8 @@
 # Device enrollment plan
 
 CLI enrollment transaction is not implemented. Pure private material generation
-and credential-checked public helper facts now exist in an isolated source branch.
+credential-checked public helper facts, and pending-device journals/barriers now
+exist in an isolated source branch.
 No device, catalog, peer or firewall change is authorized by this plan alone. Finish managed server upgrade/review before live enrollment. Owner
 Android review remains first. Current built-in VPN UI has no profile: pressing
 Start correctly asks for enrollment rather than constructing guessed credentials.
@@ -163,3 +164,36 @@ those tests create only ephemeral non-enrolled key material, not files or peers.
 The ordinary CLI still has no enroll command. Durable admission/journal/physical
 port reservations, delivery acknowledgement, secure Android delivery and exact
 report firewall readiness remain required before a profile becomes deliverable.
+
+Checkpoint follow-up: b71dcbb profile/facts baseline passed296 workspace checks.
+Independent review found a valid-but-mismatched saved WG key pair could be
+accepted. Runtime assertion reproduced it; f9feab3 now requires an explicit
+trusted `wg` tool on recovery and verifies the derived public key. Startup
+admission only parses private bounded metadata; no executable path is imported
+from a profile and no helper process runs during status/admission.
+
+The next local slice persists generated material under a global private
+enrollment lock, retains exact original-owner recovery, and records the exact
+catalog successor before permitting its phase hash to advance. Record objects
+have no generic Serialize/Debug access. Unknown external edits, symlinked or
+public files, and uncertain directory sync refuse further progress. A durable
+per-device marker is loaded before backend publication and rechecked after the
+daemon runtime lock; journal loss cannot reopen a cached or marker-bearing
+device. Ordinary jobs/views/reports/policy/network/ADB/keeper work is refused
+for pending devices; existing devices continue. Read-only barrier inspection
+retains compatibility with owned non-writable mode755 legacy test/backend dirs;
+new marker publication still requires700, and marker files require600.
+
+Not implemented yet: typed internal enrollment operation/ticket recovery, exact
+physical socket transfer, root report-firewall adapter/receipt, listener readiness,
+CLI dispatch/private output acknowledgement, and encrypted Android delivery.
+Do not run live enrollment from these source-only primitives.
+
+Barrier source verification: the first full run exposed mode755 fixture
+compatibility and stopped before later suites. No production behavior or test
+fixture was weakened: safe owned read-only directory admission is explicit,
+while writable/link state still refuses. Fresh full workspace305 checks pass,
+all-target Clippy with warnings denied, format and diff checks pass. Dedicated
+RED/GREEN logs exist for missing journal, barrier, sync handling and key-pair
+mismatch under Quickshard ignored `Logs/readb-enrollment-*`; no device test is
+claimed by these host checks.
