@@ -8,7 +8,7 @@ import java.util.Arrays;
 /** Private single enrollment record. Storage encrypts and confirms durability.
  * Callers serialize this journal with all profile imports and activation. */
 public final class EnrollmentJournal {
- public interface Storage {byte[] readConfirmed()throws Exception;void write(byte[] record)throws Exception;}
+ public interface Storage {byte[] readConfirmed()throws Exception;void write(byte[] record)throws Exception;default void archive(byte[] exactRecord)throws Exception{throw new IOException("archive_unavailable");}}
  public interface Recipient {byte[] request()throws Exception;PrivateKey key()throws Exception;}
  public interface Validator {void validate(byte[] context,byte[] profile)throws Exception;}
  private final Storage disk;private final Recipient recipient;private final Validator validator;
@@ -27,16 +27,18 @@ public final class EnrollmentJournal {
   if(in.read()!=-1||!new String(id,StandardCharsets.US_ASCII).matches("[a-z0-9][a-z0-9-]{0,47}"))throw rejected();
  }
  private Record read()throws Exception{
-  byte[] bytes=disk.readConfirmed();if(bytes==null)return null;
+  byte[] bytes=disk.readConfirmed();if(bytes==null)return null;Record r=null;boolean accepted=false;
   try{
    if(bytes.length>25000)throw rejected();DataInputStream in=new DataInputStream(new ByteArrayInputStream(bytes));if(in.readInt()!=MAGIC)throw rejected();
-   Record r=new Record();r.url=in.readUTF();if(!r.url.equals(url(r.url)))throw rejected();r.credential=blob(in,32);if(r.credential.length!=32)throw rejected();r.context=blob(in,116);if(r.context.length!=0)context(r.context);r.request=blob(in,2048);r.envelope=blob(in,12288);r.profile=blob(in,8192);r.receipt=blob(in,132);
-   if(in.read()!=-1||r.request.length<450||(r.context.length==0&&r.envelope.length!=0)||(r.envelope.length==0)!=(r.profile.length==0)||(r.receipt.length!=0&&(r.receipt.length!=132||r.envelope.length==0)))throw rejected();return r;
-  }finally{Arrays.fill(bytes,(byte)0);}
+   r=new Record();r.url=in.readUTF();if(!r.url.equals(url(r.url)))throw rejected();r.credential=blob(in,32);if(r.credential.length!=32)throw rejected();r.context=blob(in,116);if(r.context.length!=0)context(r.context);r.request=blob(in,2048);r.envelope=blob(in,12288);r.profile=blob(in,8192);r.receipt=blob(in,132);
+   if(in.read()!=-1||r.request.length<450||(r.context.length==0&&r.envelope.length!=0)||(r.envelope.length==0)!=(r.profile.length==0)||(r.receipt.length!=0&&(r.receipt.length!=132||r.envelope.length==0)))throw rejected();accepted=true;return r;
+  }finally{Arrays.fill(bytes,(byte)0);if(!accepted)clear(r);}
+ }
+ private byte[] encode(Record r)throws Exception{
+  PrivateBytes bytes=new PrivateBytes();try{DataOutputStream out=new DataOutputStream(bytes);out.writeInt(MAGIC);out.writeUTF(r.url);blob(out,r.credential);blob(out,r.context);blob(out,r.request);blob(out,r.envelope);blob(out,r.profile);blob(out,r.receipt);return bytes.toByteArray();}finally{bytes.clear();}
  }
  private void save(Record r)throws Exception{
-  PrivateBytes bytes=new PrivateBytes();DataOutputStream out=new DataOutputStream(bytes);out.writeInt(MAGIC);out.writeUTF(r.url);blob(out,r.credential);blob(out,r.context);blob(out,r.request);blob(out,r.envelope);blob(out,r.profile);blob(out,r.receipt);byte[] record=bytes.toByteArray();
-  byte[] confirmed=null;try{disk.write(record);confirmed=disk.readConfirmed();if(!same(record,confirmed))throw rejected();}finally{Arrays.fill(record,(byte)0);if(confirmed!=null)Arrays.fill(confirmed,(byte)0);bytes.clear();}
+  byte[] record=encode(r),confirmed=null;try{disk.write(record);confirmed=disk.readConfirmed();if(!same(record,confirmed))throw rejected();}finally{Arrays.fill(record,(byte)0);if(confirmed!=null)Arrays.fill(confirmed,(byte)0);}
  }
  private Record require(byte[] context,byte[] request)throws Exception{Record r=read();if(r==null||!same(context,r.context)||!same(request,r.request)){clear(r);throw rejected();}return r;}
  private EnrollmentDelivery.Opened open(Record r)throws Exception{
@@ -68,6 +70,16 @@ public final class EnrollmentJournal {
  public synchronized Session session()throws Exception{Record r=read();if(r==null)throw rejected();try{return new Session(r);}finally{clear(r);}}
  public synchronized void bind(byte[] context)throws Exception{
   context(context);Record r=read();try{if(r==null)throw rejected();if(r.context.length!=0&&!same(r.context,context))throw rejected();r.context=context.clone();save(r);}finally{clear(r);}
+ }
+ /** Explicit confirmed-user operation. Retain encrypted archive and all keys;
+  * this neither cancels a remote transaction nor deletes any server peer. */
+ public synchronized void abandonBootstrap(byte[] expectedRequest)throws Exception{
+  Record r=read();byte[] encoded=null,remaining=null;
+  try{
+   if(r==null){clear(draft);draft=null;return;}
+   if(!same(expectedRequest,r.request)||r.context.length!=0||r.envelope.length!=0||r.profile.length!=0||r.receipt.length!=0)throw rejected();
+   encoded=encode(r);disk.archive(encoded);remaining=disk.readConfirmed();if(remaining!=null)throw rejected();clear(draft);draft=null;
+  }finally{clear(r);if(encoded!=null)Arrays.fill(encoded,(byte)0);if(remaining!=null)Arrays.fill(remaining,(byte)0);}
  }
  public synchronized byte[] accept(byte[] context,byte[] request,byte[] envelope)throws Exception{
   Record r=require(context,request);try{

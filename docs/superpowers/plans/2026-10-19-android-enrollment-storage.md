@@ -24,7 +24,7 @@ ProfileStore load/enable and boot/start/service checks share the same new-record
 - [x] Implement bounded binary EnrollmentJournal with injectable storage, recipient-key and profile-validator seams, opaque private record and generic errors. One record phases requested/pending/complete; exact retained envelopes and final receipt, no secret accessors. Wipe transient private arrays.
 - [x] Implement Android EnrollmentStore with new readb-enrollment-delivery aliases/file, AES256-GCM domain separation, durable AtomicFile data fsync + exact readback + directory fsync. Retain RSA3072 recipient key, never overwrite v1 or delete keys. Public inspection returns readiness only. Optional fixtures may use unique test namespaces only.
 - [x] Integrate ProfileStore monitor/gates with boot and report/VPN startup, preserving v1 bytes/aliases and existing owner UI. Host gate tests and source contract checks cover stale enabled flags, direct service requests and legacy-import race boundaries.
-- [ ] Verify Java --release11 pure tests and source/target11 SDK compilation; existing host handover/permission/JNI checks and relevant workspace tests. No AndroidKeystore/device durability claim without separately authorized instrumentation. Record immutable checkpoint for independent review before integration.
+- [x] Verify Java --release11 pure tests and source/target11 SDK compilation; existing host handover/permission/JNI checks and relevant workspace tests. No AndroidKeystore/device durability claim without separately authorized instrumentation. Record immutable checkpoint for independent review before integration.
 
 ## Review focus
 
@@ -56,3 +56,27 @@ All production Java compiled source/target11 against SDK36; pure Java tests use
 acceptance is implied by injected host failures or compilation. New orphan .new
 without a committed record fails closed and requires explicit recovery; it never
 silently regenerates a published request. No owner files or aliases were cleared.
+
+## Explicit abandoned-bootstrap archive
+
+Root approved an explicit confirmed user operation to correct a saved URL typo.
+It is allowed only before any context/envelope/profile/final exists, while idle
+and without v1 artifacts. Preserve exact encrypted active bytes in a fresh0600
+archive: CREATE_NEW, data fsync, exact readback and directory fsync all precede
+active-file removal. Retain every key and archive; no remote session/peer deletion.
+Confirm active absence with directory fsync before returning. A missing-state read
+also confirms absence before new request generation. Archive or fsync failure
+returns failure; committed archive plus lost reply remains safely recoverable.
+The UI must confirm and explain that any old server session requires separate
+administrative cleanup. Host tests inject each archive boundary; no real owner
+app data is reset by development tests.
+
+Baseline source passed328 full workspace tests, all-target Clippy with warnings
+denied, fmt/diff, JNI and stale NSD callback checks, legacy handover11 protocol+
+10 journal checks and permission-flow checks. The archive follow-up passed the
+three targeted Rust/Java tests and full Java SDK compilation. Archive tests cover
+wrong-request confirmation, no-space before archive, archive-written/active-still-
+present sync failure, removal followed by lost reply, exact preserved bytes,
+missing-state repeat, successful new-origin bootstrap, and bound/final refusal.
+The public native API is abandonBootstrap(expectedRequest); UI confirmation and
+any old server cleanup remain separate responsibilities. No devices were changed.

@@ -28,6 +28,7 @@ final class EnrollmentStore {
     try{if(bytes.length<30||bytes[0]!=1)throw rejected();Cipher cipher=Cipher.getInstance("AES/GCM/NoPadding");cipher.init(Cipher.DECRYPT_MODE,aes(false),new GCMParameterSpec(128,bytes,1,12));cipher.updateAAD(aad());plain=cipher.doFinal(bytes,13,bytes.length-13);return plain;}
     catch(Exception failure){if(plain!=null)Arrays.fill(plain,(byte)0);throw rejected();}
    }
+   public void archive(byte[] exact)throws Exception{archiveCiphertext(exact);}
    public void write(byte[] plain)throws Exception{
     Cipher cipher=Cipher.getInstance("AES/GCM/NoPadding");cipher.init(Cipher.ENCRYPT_MODE,aes(true));cipher.updateAAD(aad());ByteArrayOutputStream out=new ByteArrayOutputStream();out.write(1);out.write(cipher.getIV());out.write(cipher.doFinal(plain));writeCiphertext(out.toByteArray());
    }
@@ -53,7 +54,7 @@ final class EnrollmentStore {
  private void syncDirectory()throws Exception{FileDescriptor fd=Os.open(dir.getAbsolutePath(),OsConstants.O_RDONLY|OsConstants.O_CLOEXEC,0);try{if(!OsConstants.S_ISDIR(Os.fstat(fd).st_mode))throw rejected();Os.fsync(fd);}finally{Os.close(fd);}}
  private byte[] readCiphertext()throws Exception{
   boolean base=file.getBaseFile().exists(),backup=new File(file.getBaseFile()+".bak").exists();
-  if(!base&&!backup){if(new File(file.getBaseFile()+".new").exists())throw rejected();return null;}
+  if(!base&&!backup){if(new File(file.getBaseFile()+".new").exists())throw rejected();syncDirectory();return null;}
   byte[] bytes;try(InputStream in=file.openRead()){bytes=in.readNBytes(32769);}if(bytes.length>32768)throw rejected();syncDirectory();return bytes;
  }
  private void writeCiphertext(byte[] bytes)throws Exception{
@@ -61,6 +62,19 @@ final class EnrollmentStore {
   try{out=file.startWrite();out.write(bytes);out.flush();Os.fsync(out.getFD());file.finishWrite(out);out=null;byte[] committed=readCiphertext();if(committed==null||!MessageDigest.isEqual(bytes,committed))throw rejected();}
   finally{if(out!=null)file.failWrite(out);}
  }
+ private void archiveCiphertext(byte[] exactRecord)throws Exception{
+  byte[] original=readCiphertext();if(original==null)throw rejected();
+  Cipher cipher=Cipher.getInstance("AES/GCM/NoPadding");cipher.init(Cipher.DECRYPT_MODE,aes(false),new GCMParameterSpec(128,original,1,12));cipher.updateAAD(aad());byte[] plain=cipher.doFinal(original,13,original.length-13);
+  try{if(!MessageDigest.isEqual(plain,exactRecord))throw rejected();}finally{Arrays.fill(plain,(byte)0);}
+  File archive=new File(dir,prefix+"-archive-"+java.util.UUID.randomUUID()+".enc");
+  FileDescriptor fd=Os.open(archive.getAbsolutePath(),OsConstants.O_WRONLY|OsConstants.O_CREAT|OsConstants.O_EXCL|OsConstants.O_CLOEXEC,0600);
+  try(FileOutputStream out=new FileOutputStream(fd)){out.write(original);out.flush();Os.fsync(out.getFD());}
+  byte[] saved;try(InputStream in=new FileInputStream(archive)){saved=in.readNBytes(32769);}if(!MessageDigest.isEqual(original,saved))throw rejected();syncDirectory();
+  // Archive is durable before removing the active binding. Keep all aliases.
+  for(String suffix:new String[]{"",".bak",".new"})java.nio.file.Files.deleteIfExists(new File(file.getBaseFile()+suffix).toPath());
+  if(file.getBaseFile().exists()||new File(file.getBaseFile()+".bak").exists()||new File(file.getBaseFile()+".new").exists())throw rejected();syncDirectory();
+ }
+ void abandonBootstrap(byte[] expectedRequest)throws Exception{synchronized(ProfileStore.class){ProfileStore.requireEnrollmentIdle(context);journal.abandonBootstrap(expectedRequest);}}
  EnrollmentJournal.Session prepare(String serverUrl)throws Exception{synchronized(ProfileStore.class){ProfileStore.requireEnrollmentIdle(context);return journal.prepare(serverUrl);}}
  EnrollmentJournal.Session session()throws Exception{synchronized(ProfileStore.class){return journal.session();}}
  void bind(byte[] binding)throws Exception{synchronized(ProfileStore.class){journal.bind(binding);}}
