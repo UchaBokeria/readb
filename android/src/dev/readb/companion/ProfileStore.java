@@ -33,7 +33,7 @@ final class ProfileStore {
         if(EnrollmentStore.present(c))try{return !legacyExists(c)&&EnrollmentStore.get(c).ready();}catch(Exception unavailable){return false;}
         return legacyExists(c);
     }
-    static boolean legacyExists(Context c) { return file(c).getBaseFile().exists()||new File(file(c).getBaseFile()+".bak").exists(); }
+    static boolean legacyExists(Context c) { return file(c).getBaseFile().exists()||new File(file(c).getBaseFile()+".bak").exists()||new File(file(c).getBaseFile()+".new").exists(); }
     static synchronized void requireEnrollmentIdle(Context c)throws Exception {
         android.content.SharedPreferences state=c.createDeviceProtectedStorageContext().getSharedPreferences("status",0);
         if(legacyExists(c))throw new IOException("existing_profile_preserved");

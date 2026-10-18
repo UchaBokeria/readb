@@ -142,6 +142,7 @@ fn pending_android_enrollment_gates_every_profile_activation_and_import() {
         "if(EnrollmentStore.present(c))throw new IOException(\"enrollment_delivery_in_progress\")"
     ));
     assert!(profile.contains("if(EnrollmentStore.present(c))return loadDelivered(c)"));
+    assert!(profile.contains("new File(file(c).getBaseFile()+\".new\").exists()"));
     assert!(
         profile.contains("static synchronized boolean serviceStarting(Context c,Object service)")
     );
