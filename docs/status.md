@@ -55,6 +55,8 @@ headset connectivity, unattended first unlock or release readiness.
 
 ## Next gates
 
+Full checklist: [release gates](acceptance.md).
+
 1. Reviewed empty-staging live upgrade; general managed-device upgrade/rollback.
 2. Authenticated one-use encrypted old/new Android UID handover; preserve PIN/keys.
 3. Actual Quest and Pixel permission/VPN/report/port/UI/boot/cutover/rollback checks.
