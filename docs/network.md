@@ -142,3 +142,8 @@ readb --ticket PRIVATE_TICKET network rm DEVICE
 
 Source checks include real SSH compatibility with the old installed helper; a
 full new-helper managed upgrade is still required before production enrollment.
+
+The authority server checks its held directory/socket identities once per second.
+Helper RuntimeDirectory removal/recreation drops the stale binding and retries the
+fixed path. It does not delete a different socket inode. A real restricted-root
+namespace regression proved this recovery; legacy live services were unchanged.

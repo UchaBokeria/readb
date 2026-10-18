@@ -289,6 +289,24 @@ struct Bound {
     ino: u64,
 }
 impl Bound {
+    fn current(&self) -> bool {
+        let uid = unsafe { libc::geteuid() };
+        let Ok(dir) = directory(uid) else {
+            return false;
+        };
+        let (Ok(current), Ok(held)) = (dir.metadata(), self._lock.metadata()) else {
+            return false;
+        };
+        current.dev() == held.dev()
+            && current.ino() == held.ino()
+            && fs::symlink_metadata(&self.path).is_ok_and(|m| {
+                m.file_type().is_socket()
+                    && m.uid() == uid
+                    && m.mode() & 0o7777 == 0o602
+                    && m.dev() == self.dev
+                    && m.ino() == self.ino
+            })
+    }
     fn bind() -> Res<Self> {
         let uid = unsafe { libc::geteuid() };
         let checked = directory(uid)?;
@@ -353,11 +371,19 @@ impl Server {
         let stop = Arc::new(AtomicBool::new(false));
         let flag = stop.clone();
         let worker = thread::spawn(move || {
-            let mut bound = None;
+            let mut bound: Option<Bound> = None;
             let mut next = Instant::now();
+            let mut inspect_at = Instant::now();
             let mut workers: Vec<JoinHandle<()>> = Vec::new();
             let mut last_error = None;
             while !flag.load(Ordering::SeqCst) {
+                if Instant::now() >= inspect_at {
+                    if bound.as_ref().is_some_and(|b| !b.current()) {
+                        bound = None;
+                        next = Instant::now();
+                    }
+                    inspect_at = Instant::now() + Duration::from_secs(1);
+                }
                 if bound.is_none() && Instant::now() >= next {
                     match Bound::bind() {
                         Ok(b) => {
@@ -468,6 +494,32 @@ mod namespace_tests {
                         drop(b);
                         fs::remove_file(saved).unwrap();
                         assert!(!Path::new(SOCKET).exists());
+                        let _server = Server::start(Arc::new(NetworkController::new()));
+                        for _ in 0..200 {
+                            if Path::new(SOCKET).exists() {
+                                break;
+                            }
+                            thread::sleep(Duration::from_millis(10));
+                        }
+                        assert!(Path::new(SOCKET).exists());
+                        fs::write(Path::new(DIRECTORY).join("ready"), b"ready").unwrap();
+                        for _ in 0..400 {
+                            if Path::new("/run/readb-network/authority-old").exists() {
+                                break;
+                            }
+                            thread::sleep(Duration::from_millis(10));
+                        }
+                        for _ in 0..400 {
+                            if Path::new(SOCKET).exists() {
+                                break;
+                            }
+                            thread::sleep(Duration::from_millis(10));
+                        }
+                        assert!(
+                            Path::new(SOCKET).exists(),
+                            "authority did not rebind after helper runtime replacement"
+                        );
+                        thread::sleep(Duration::from_secs(1));
                         return;
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -573,6 +625,37 @@ mod namespace_tests {
         FixedAuthority { uid: 1000 }
             .check(&"a".repeat(64), &"b".repeat(64))
             .unwrap();
+        for _ in 0..200 {
+            if Path::new(DIRECTORY).join("ready").exists() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(Path::new(DIRECTORY).join("ready").exists());
+        assert!(
+            FixedAuthority { uid: 1000 }
+                .check(&"a".repeat(64), &"b".repeat(64))
+                .unwrap_err()
+                .contains("denied")
+        );
+        fs::rename(DIRECTORY, "/run/readb-network/authority-old").unwrap();
+        prepare_directory(1000).unwrap();
+        for _ in 0..300 {
+            if Path::new(SOCKET).exists() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            Path::new(SOCKET).exists(),
+            "helper restart must not strand the callback"
+        );
+        assert!(
+            FixedAuthority { uid: 1000 }
+                .check(&"a".repeat(64), &"b".repeat(64))
+                .unwrap_err()
+                .contains("denied")
+        );
         assert!(child.0.wait().unwrap().success());
     }
 }
