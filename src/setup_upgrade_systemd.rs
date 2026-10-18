@@ -175,6 +175,7 @@ fn frozen_process(state: &Path, file: &Path, b: &Bootstrap<'_>) -> Res<String> {
 /// exact sole frozen owned process are required; no runtime lock is bypassed for
 /// a running/unfrozen coordinator and no missing catalog ownership is adopted.
 pub fn bootstrap_empty(state: &Path, file: &Path, b: &Bootstrap<'_>) -> Res<Value> {
+    let _allocation = crate::enrollment_journal::maintenance_guard(state)?;
     let marker = crate::maintenance::Marker::new(b.upgrade, b.config)?;
     let (_, pin) = load_empty(state, file)?;
     if pin != b.config {

@@ -286,12 +286,23 @@ pub fn inspect(root: &Path) -> Res<BTreeMap<String, Record>> {
         .collect())
 }
 /// Global enrollment allocator lock; never used as a device controller lease.
+// LOCK_UN precedes descriptor close. CLOEXEC alone leaves an open-file-
+// description inherited by a concurrent fork alive until that child execs.
+struct AllocationLock(File);
+impl Drop for AllocationLock {
+    fn drop(&mut self) {
+        if unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) } != 0 {
+            eprintln!("readb: enrollment_allocator_unlock_unconfirmed");
+        }
+    }
+}
 pub struct Store {
     dir: File,
-    _lock: File,
+    _lock: AllocationLock,
     observed: Option<String>,
     poisoned: bool,
     wg: Option<std::path::PathBuf>,
+    root: std::path::PathBuf,
 }
 pub(crate) struct AllocationGuard {
     _store: Store,
@@ -299,13 +310,27 @@ pub(crate) struct AllocationGuard {
 /// Ordinary catalog add shares the allocator lock, including its journal check.
 /// It has no key-generation capability and may not act as an enrollment writer.
 pub(crate) fn catalog_guard(root: &Path) -> Res<AllocationGuard> {
-    Ok(AllocationGuard {
-        _store: Store::open_inner(root, None)?,
-    })
+    let store = Store::open_inner(root, None)?;
+    store.check_admission()?;
+    Ok(AllocationGuard { _store: store })
+}
+/// Allocation lock precedes catalog/transports/runtime/maintenance locks. Keep
+/// this guard through upgrade marker publication and postchecks, even when the
+/// catalog is empty. Recovery/release observations do not call this gate.
+pub(crate) fn maintenance_guard(root: &Path) -> Res<AllocationGuard> {
+    let store = Store::open_inner(root, None)?;
+    if !store.load()?.records.is_empty() {
+        return Err(
+            "enrollment_pending: finish or inspect pending enrollment before upgrade".into(),
+        );
+    }
+    Ok(AllocationGuard { _store: store })
 }
 impl Store {
     pub fn open(root: &Path, wg: &Path) -> Res<Self> {
-        Self::open_inner(root, Some(wg.to_path_buf()))
+        let store = Self::open_inner(root, Some(wg.to_path_buf()))?;
+        store.check_admission()?;
+        Ok(store)
     }
     fn open_inner(root: &Path, wg: Option<std::path::PathBuf>) -> Res<Self> {
         let dir = directory(root, true)?.ok_or("enrollment_directory_unavailable")?;
@@ -329,6 +354,7 @@ impl Store {
         if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
             return Err("enrollment_busy: another enrollment is allocating resources".into());
         }
+        let lock = AllocationLock(lock);
         let b = read(&dir)?;
         decode(b.as_deref())?;
         dir.sync_all()
@@ -340,7 +366,17 @@ impl Store {
             observed,
             poisoned: false,
             wg,
+            root: root.to_path_buf(),
         })
+    }
+    pub(crate) fn check_admission(&self) -> Res<()> {
+        self.bound_to(&self.root)?;
+        if crate::maintenance::inspect_active(&self.root)?.is_some() {
+            return Err(
+                "coordinator_maintenance: enrollment paused until exact upgrade completion".into(),
+            );
+        }
+        Ok(())
     }
     fn load(&self) -> Res<Journal> {
         if self.poisoned {
@@ -362,6 +398,7 @@ impl Store {
         j: &Journal,
         sync: impl FnOnce(&File) -> std::io::Result<()>,
     ) -> Res<()> {
+        self.check_admission()?;
         j.validate()?;
         self.load()?;
         let b = serde_json::to_vec(j).map_err(|_| "enrollment_encoding_failed")?;
@@ -430,6 +467,7 @@ impl Store {
         previous: Option<&str>,
         ticket: &str,
     ) -> Res<()> {
+        self.check_admission()?;
         if !hash_valid(ticket) {
             return Err("enrollment_ticket_invalid".into());
         }
@@ -446,6 +484,7 @@ impl Store {
         self.publish(&journal)
     }
     pub fn begin(&mut self, m: Material, owner: &Owner) -> Res<Record> {
+        self.check_admission()?;
         if !owner_valid(owner) {
             return Err("enrollment_owner_invalid".into());
         }
@@ -488,6 +527,7 @@ impl Store {
         owner: &Owner,
         current: &ServerConfig,
     ) -> Res<ServerConfig> {
+        self.check_admission()?;
         let mut j = self.load()?;
         let r = j.records.get_mut(id).ok_or("enrollment_not_found")?;
         r.authorize(transaction, owner)?;
@@ -522,6 +562,7 @@ impl Store {
         owner: &Owner,
         current: &ServerConfig,
     ) -> Res<()> {
+        self.check_admission()?;
         let mut j = self.load()?;
         let r = j.records.get_mut(id).ok_or("enrollment_not_found")?;
         r.authorize(transaction, owner)?;
@@ -648,6 +689,19 @@ pub(crate) fn publish_barrier(path: &Path, transaction: &str) -> Res<()> {
 mod tests {
     use super::*;
     use std::{fs, os::unix::fs::PermissionsExt};
+    #[test]
+    fn parent_drop_unlocks_even_if_a_fork_equivalent_fd_remains_open() {
+        let root = std::env::temp_dir().join(format!("readb-enrollment-lock-{}", random()));
+        fs::create_dir(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        let store = Store::open(&root, "/usr/bin/wg".as_ref()).unwrap();
+        let inherited = store._lock.0.try_clone().unwrap();
+        drop(store);
+        let next = Store::open(&root, "/usr/bin/wg".as_ref()).unwrap();
+        drop(next);
+        drop(inherited);
+        fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn barrier_reads_preserve_old_readonly_directories_but_never_accept_writable_or_linked_state() {
         let root = std::env::temp_dir().join(format!("readb-enrollment-mode-{}", random()));

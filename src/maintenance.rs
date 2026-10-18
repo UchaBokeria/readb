@@ -85,8 +85,8 @@ fn directory(path: &Path) -> Res<File> {
     }
     Ok(dir)
 }
-fn read_marker(dir: &File, config: &str) -> Res<Option<Marker>> {
-    if !hash(config) {
+fn read_marker(dir: &File, config: Option<&str>) -> Res<Option<Marker>> {
+    if config.is_some_and(|s| !hash(s)) {
         return Err("maintenance_config_hash_invalid".into());
     }
     let fd = unsafe {
@@ -117,7 +117,7 @@ fn read_marker(dir: &File, config: &str) -> Res<Option<Marker>> {
         .map_err(|_| "maintenance_marker_read_failed")?;
     let m: Marker = serde_json::from_slice(&bytes).map_err(|_| "maintenance_marker_invalid")?;
     m.validate()?;
-    if m.config != config {
+    if config.is_some_and(|s| m.config != s) {
         return Err("maintenance_config_changed".into());
     }
     Ok(Some(m))
@@ -125,7 +125,12 @@ fn read_marker(dir: &File, config: &str) -> Res<Option<Marker>> {
 /// Atomic read-only snapshot, not quiescence authority. Startup must recheck
 /// after acquiring the catalog runtime lock; writers use Store's separate lock.
 pub fn inspect(path: &Path, config: &str) -> Res<Option<Marker>> {
-    read_marker(&directory(path)?, config)
+    read_marker(&directory(path)?, Some(config))
+}
+/// Read-only admission fence regardless of catalog phase. Presence or malformed
+/// state closes new enrollment; this does not authorize removing a marker.
+pub(crate) fn inspect_active(path: &Path) -> Res<Option<Marker>> {
+    read_marker(&directory(path)?, None)
 }
 impl Store {
     pub fn open(path: &Path) -> Res<Self> {
@@ -153,7 +158,7 @@ impl Store {
         Ok(Self { dir, _lock: lock })
     }
     pub fn load(&self, config: &str) -> Res<Option<Marker>> {
-        read_marker(&self.dir, config)
+        read_marker(&self.dir, Some(config))
     }
     pub fn publish(&mut self, marker: &Marker) -> Res<()> {
         self.publish_sync(marker, File::sync_all)

@@ -381,3 +381,90 @@ fn ordinary_catalog_add_cannot_race_an_inflight_enrollment_allocator() {
     registry.add(import.device, import.listener).unwrap();
     fs::remove_dir_all(p).unwrap();
 }
+#[test]
+fn empty_catalog_upgrade_refuses_allocator_and_pre_catalog_pending_enrollment() {
+    let p = dir();
+    let registry = readb::registry::Registry::new(config(), p.clone()).unwrap();
+    let pin = registry.config_fingerprint().unwrap();
+    let tag = "a".repeat(64);
+    let mut allocation = Store::open(&p, "/usr/bin/wg".as_ref()).unwrap();
+    assert!(
+        registry
+            .prepare_maintenance(&tag, &pin)
+            .unwrap_err()
+            .contains("enrollment_busy")
+    );
+    assert!(!p.join("upgrade-maintenance.json").exists());
+    allocation.begin(material(), &owner()).unwrap();
+    drop(allocation);
+    let original = fs::read(p.join("enrollment/journal.json")).unwrap();
+    assert!(registry.config().devices.is_empty());
+    assert!(
+        registry
+            .prepare_maintenance(&tag, &pin)
+            .unwrap_err()
+            .contains("enrollment_pending")
+    );
+    assert!(!p.join("upgrade-maintenance.json").exists());
+    assert!(fs::read(p.join("enrollment/journal.json")).unwrap() == original);
+    fs::remove_dir_all(p).unwrap();
+}
+#[test]
+fn maintenance_marker_blocks_new_and_cached_enrollment_mutations() {
+    let p = dir();
+    let registry = readb::registry::Registry::new(config(), p.clone()).unwrap();
+    let pin = registry.config_fingerprint().unwrap();
+    let tag = "a".repeat(64);
+    registry.prepare_maintenance(&tag, &pin).unwrap();
+    let blocked = Store::open(&p, "/usr/bin/wg".as_ref()).err().unwrap();
+    assert!(blocked.contains("maintenance"), "{blocked}");
+    assert!(!p.join("enrollment/journal.json").exists());
+    registry.resume_maintenance(&tag, &pin).unwrap();
+    let mut allocation = Store::open(&p, "/usr/bin/wg".as_ref()).unwrap();
+    readb::maintenance::Store::open(&p)
+        .unwrap()
+        .publish(&readb::maintenance::Marker::new(&tag, &pin).unwrap())
+        .unwrap();
+    assert!(
+        allocation
+            .begin(material(), &owner())
+            .err()
+            .unwrap()
+            .contains("maintenance")
+    );
+    assert!(!p.join("enrollment/journal.json").exists());
+    fs::write(p.join("upgrade-maintenance.json"), b"{unknown").unwrap();
+    assert!(allocation.begin(material(), &owner()).is_err());
+    assert_eq!(
+        fs::read(p.join("upgrade-maintenance.json")).unwrap(),
+        b"{unknown"
+    );
+    drop(allocation);
+    fs::remove_dir_all(p).unwrap();
+}
+#[test]
+fn offline_bootstrap_publication_refuses_pending_before_process_or_empty_catalog_probes() {
+    let p = dir();
+    let registry = readb::registry::Registry::new(config(), p.clone()).unwrap();
+    let pin = registry.config_fingerprint().unwrap();
+    let tag = "a".repeat(64);
+    let mut allocation = Store::open(&p, "/usr/bin/wg".as_ref()).unwrap();
+    allocation.begin(material(), &owner()).unwrap();
+    drop(allocation);
+    let b = readb::setup_upgrade_systemd::Bootstrap {
+        upgrade: &tag,
+        config: &pin,
+        pid: 999999,
+        tick: "unread",
+        binary: "/not-executed".as_ref(),
+        image: &tag,
+        group: "/not-probed/readb.service",
+    };
+    assert!(
+        readb::setup_upgrade_systemd::bootstrap_empty(&p, &p.join("server.json"), &b)
+            .unwrap_err()
+            .contains("enrollment_pending")
+    );
+    assert!(!p.join("upgrade-maintenance.json").exists());
+    fs::remove_dir_all(p).unwrap();
+}

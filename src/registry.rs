@@ -133,6 +133,7 @@ impl Registry {
         root_status: impl FnOnce() -> Res<Value>,
     ) -> Res<String> {
         store.bound_to(&self.root)?;
+        store.check_admission()?;
         let record = store.recover(id, owner)?;
         let status = root_status()?;
         if status["fenced"] != false || status["scoped_controller"] != true {
@@ -160,6 +161,7 @@ impl Registry {
         fingerprint(&self.catalog.lock().unwrap().config)
     }
     pub fn prepare_maintenance(&self, upgrade: &str, config: &str) -> Res<Value> {
+        let _allocation = crate::enrollment_journal::maintenance_guard(&self.root)?;
         let expected = crate::maintenance::Marker::new(upgrade, config)?;
         let catalog = self.catalog.lock().unwrap();
         if self
