@@ -142,16 +142,14 @@ fn cancelled_pair_prompt_restores_echo_and_flushes_unsubmitted_code() {
     );
 }
 #[test]
-fn network_helper_never_runs_as_a_remote_client() {
+fn network_status_requires_a_context_without_local_fallback() {
     let o = Command::new(env!("CARGO_BIN_EXE_readb"))
         .args(["network", "status"])
         .env("HOME", "/nonexistent")
         .output()
         .unwrap();
     assert!(!o.status.success());
-    assert!(
-        String::from_utf8_lossy(&o.stderr).contains("network_requires_explicit_--local_on_server")
-    );
+    assert!(String::from_utf8_lossy(&o.stderr).contains("no_context"));
 }
 #[test]
 fn network_installer_refuses_unprivileged_calls_before_touching_system_files() {

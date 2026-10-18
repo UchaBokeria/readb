@@ -51,7 +51,7 @@ enum Cmd {
     Setup(SetupCmd),
     #[command(
         subcommand,
-        about = "Narrow local WireGuard peer helper; never direct client ADB"
+        about = "Manage device network through the coordinator; root maintenance is local"
     )]
     Network(NetworkCmd),
     #[command(about = "Run the coordinator")]
@@ -387,7 +387,12 @@ fn run() -> Res<i32> {
         }
     }
     match &c.command {
-        Cmd::Network(cmd) => {
+        Cmd::Network(cmd)
+            if !matches!(
+                cmd,
+                NetworkCmd::Status | NetworkCmd::Enroll { .. } | NetworkCmd::Rm { .. }
+            ) || (c.local && unsafe { libc::geteuid() } == 0) =>
+        {
             if !c.local {
                 return Err("network_requires_explicit_--local_on_server".into());
             }
@@ -672,6 +677,28 @@ fn run() -> Res<i32> {
         req.ticket = client::read_ticket(p)?;
     }
     match &c.command {
+        Cmd::Network(NetworkCmd::Status) => {
+            req.action = "network-status".into();
+            req.device.clear();
+        }
+        Cmd::Network(NetworkCmd::Enroll { id, key, address }) => {
+            if !readb::schema::valid_id(id) || c.device.as_ref().is_some_and(|d| d != id) {
+                return Err("network_device_mismatch_or_invalid_id".into());
+            }
+            if !readb::network::valid_key(key) {
+                return Err("network_invalid_peer_key".into());
+            }
+            req.device = id.clone();
+            req.action = "network-enroll".into();
+            req.args = vec![key.clone(), address.to_string()];
+        }
+        Cmd::Network(NetworkCmd::Rm { id }) => {
+            if !readb::schema::valid_id(id) || c.device.as_ref().is_some_and(|d| d != id) {
+                return Err("network_device_mismatch_or_invalid_id".into());
+            }
+            req.device = id.clone();
+            req.action = "network-rm".into();
+        }
         Cmd::Device(DeviceCmd::Ls) | Cmd::Doctor | Cmd::Job(JobCmd::Ls) => {}
         Cmd::Device(DeviceCmd::Inspect) | Cmd::Job(JobCmd::Inspect) => {
             required_device(&c)?;

@@ -1,5 +1,9 @@
 # Status
 
+Current October18: Blackwall has an active empty staging server (77406f5 code).
+Latest controller-proof/CLI source is tested but not deployed. Legacy Quest/Pixel
+remain canonical; managed upgrade and companion/device acceptance are next.
+
 October17, development build0.2.0. No production readb service or public release yet.
 
 Working locally: multi-device registry and private imports, shared viewers/one
@@ -211,3 +215,11 @@ callback access with only NET_ADMIN+CHOWN, unsafe directory refusal, competing
 binder refusal, stale recovery and replacement-inode-safe shutdown. Restricted
 root chmod-after-chown failure was reproduced before its fix. This is not deployed.
 CLI/controller RPC completion and managed upgrade remain next; legacy stays live.
+
+Controller CLI/RPC integration passes243host+243Rust1.88/musl, fmt/Clippy and
+fresh whole-proxy review. Real SSH PC/Blackwall fixture passed shared viewers,
+correct controller conflict and old-helper refusal before durable intent. Leases
+released; temporary unit stopped; live PIDs unchanged. Lost reply before/after
+proof, caller loss, cancel, expiry, malformed result and completion-history failure
+retain restart fences. Root client checks kernel UID0. No proxy runtime deployment;
+managed upgrade/provider admission and encrypted companion handover remain gates.

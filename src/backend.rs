@@ -897,6 +897,18 @@ impl Backend {
         atomic(&self.config.dir.join("last-report.json"), &s.receipt)?;
         Ok(connected)
     }
+    pub(crate) fn preflight_network(&self, ticket: &str) -> Res<()> {
+        let mut s = self.state.lock().unwrap();
+        Self::check_running(&s)?;
+        if let Err(error) = s.gate.authorize(ticket, lease_now()) {
+            self.persist_fence(&s)?;
+            return Err(error);
+        }
+        if s.gate.active || s.viewers.values().any(|v| v.active) {
+            return Err("network_operation_busy: wait for active operations".into());
+        }
+        Ok(())
+    }
     /// Network setup must work before ADB is paired or reachable. This grants
     /// no kernel authority; the coordinator still needs a bound root proof.
     pub fn begin_network(&self, t: &str, label: &str) -> Res<String> {

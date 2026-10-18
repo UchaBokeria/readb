@@ -114,8 +114,8 @@ Recovery accepts only the recorded absent/exact file and before/after receipt;
 external edits and root coordinator accounts are refused. It never starts a unit
 or changes a peer. Setup CLI composition remains pending.
 
-Development safety boundary (October18): direct non-root `network enroll`, `rm`
-and `reconcile` requests now refuse with `network_controller_proxy_required`.
+Development safety boundary (October18): direct non-root root-helper Apply and
+Reconcile requests refuse with `network_controller_proxy_required`.
 A matching UID is not a device controller lease. Root maintenance and status are
 unchanged. Job-scoped coordinator integration is the next step; this is not yet
 replacement enrollment acceptance. Keep existing device services running.
@@ -127,3 +127,18 @@ request digest. The callback permits no caller-selected path. Root retains only
 NET_ADMIN+CHOWN. Missing authority refuses the request; ordinary ADB can still run.
 A lost/ambiguous peer result requires reconciliation, never blind retry.
 CLI integration and managed upgrade must pass before enabling this on devices.
+
+Normal client network status/enroll/rm now use the selected coordinator context.
+Enroll/rm require its actual device controller ticket; no direct client VPN/ADB.
+The coordinator verifies device/ticket first, then root capability before writing
+an intent. An older helper returns upgrade-required with no operation journal.
+Root-only maintenance still requires explicit --local on the server.
+
+```sh
+readb network status
+readb --ticket PRIVATE_TICKET network enroll --id DEVICE --key PUBLIC_KEY --address VPN_IP
+readb --ticket PRIVATE_TICKET network rm DEVICE
+```
+
+Source checks include real SSH compatibility with the old installed helper; a
+full new-helper managed upgrade is still required before production enrollment.

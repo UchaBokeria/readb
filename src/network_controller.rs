@@ -89,6 +89,60 @@ impl NetworkController {
             finished: false,
         })
     }
+    /// Capability reads precede intent, but only after device/ticket validation.
+    /// Any ambiguous root reply or lost caller leaves the operation fenced.
+    pub fn execute(
+        &self,
+        registry: &crate::registry::Registry,
+        ticket: &str,
+        device: &str,
+        request: Request,
+        mut call: impl FnMut(crate::network_runtime::Call) -> Res<serde_json::Value>,
+        alive: impl Fn() -> bool,
+    ) -> Res<serde_json::Value> {
+        use crate::network_runtime::Call;
+        registry.preflight_network(ticket, device, &request)?;
+        if !alive() {
+            return Err("network_client_disconnected_before_dispatch".into());
+        }
+        let status = call(Call::Status)?;
+        if status["scoped_controller"] != true {
+            return Err("network_helper_upgrade_required: no controller proof support".into());
+        }
+        if status["fenced"] != false {
+            return Err("network_root_cleanup_unknown: inspect root state before retry".into());
+        }
+        if !alive() {
+            return Err("network_client_disconnected_before_dispatch".into());
+        }
+        let scope = self.begin(registry, ticket, device, request.clone())?;
+        let reply = call(Call::Scoped {
+            nonce: scope.nonce().into(),
+            request,
+        })?;
+        if !alive() {
+            return Err(
+                "network_client_disconnected: inspect root and device state before retry".into(),
+            );
+        }
+        match reply["outcome"].as_str() {
+            Some("applied") => {
+                scope.finish(Outcome::Applied)?;
+                Ok(reply)
+            }
+            Some("refused") => {
+                scope.finish(Outcome::Refused)?;
+                Err(reply["error"]
+                    .as_str()
+                    .unwrap_or("network_request_refused")
+                    .into())
+            }
+            _ => {
+                scope.finish(Outcome::Uncertain)?;
+                unreachable!()
+            }
+        }
+    }
     pub fn authorize(&self, nonce: &str, digest: &str) -> Res<()> {
         if !valid_hash(nonce) || !valid_hash(digest) {
             return Err("network_authority_invalid_proof".into());

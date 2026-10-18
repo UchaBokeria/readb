@@ -29,7 +29,7 @@ pub struct Policy {
     pub first: Ipv4Addr,
     pub last: Ipv4Addr,
 }
-pub(crate) fn valid_key(s: &str) -> bool {
+pub fn valid_key(s: &str) -> bool {
     // WireGuard keys are canonical base64 of exactly32 bytes. Reject zero keys.
     s.len() == 44
         && s.ends_with('=')

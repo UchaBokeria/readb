@@ -332,3 +332,144 @@ fn registered_backend() -> (readb::registry::Registry, std::sync::Arc<Backend>) 
     let backend = registry.device("quest").unwrap();
     (registry, backend)
 }
+
+#[test]
+fn network_rpc_preflight_checks_ticket_and_helper_before_durable_intent() {
+    use readb::network_runtime::Call;
+    let (r, b) = registered_backend();
+    let c = b.claim(owner("network"), 90).unwrap();
+    let call = |_: Call| -> readb::policy::Res<serde_json::Value> {
+        panic!("invalid ticket reached root")
+    };
+    assert!(
+        r.network
+            .execute(&r, "wrong", "quest", enroll("quest"), call, || true)
+            .is_err()
+    );
+    let viewer = b.watch(owner("view"), 90).unwrap();
+    assert!(
+        r.network
+            .execute(
+                &r,
+                &viewer,
+                "quest",
+                enroll("quest"),
+                |_| panic!("viewer reached root"),
+                || true
+            )
+            .is_err()
+    );
+    assert!(
+        r.network
+            .execute(
+                &r,
+                &c,
+                "quest",
+                enroll("phone"),
+                |_| panic!("wrong device reached root"),
+                || true
+            )
+            .is_err()
+    );
+    let active = b.begin_network(&c, "network-enroll").unwrap();
+    assert!(
+        r.network
+            .execute(
+                &r,
+                &c,
+                "quest",
+                enroll("quest"),
+                |_| panic!("active operation reached root"),
+                || true
+            )
+            .is_err()
+    );
+    b.finish_network(&c, &active, false, "fixture-refusal")
+        .unwrap();
+    assert!(
+        r.network
+            .execute(
+                &r,
+                &c,
+                "quest",
+                enroll("quest"),
+                |call| {
+                    assert!(matches!(call, Call::Status));
+                    Ok(serde_json::json!({"fenced":false}))
+                },
+                || true
+            )
+            .unwrap_err()
+            .contains("upgrade")
+    );
+    assert!(!b.config.dir.join("active-operation.json").exists());
+    b.release(&c).unwrap();
+    fs::remove_dir_all(&r.root).unwrap();
+}
+#[test]
+fn network_rpc_success_proves_request_and_loss_cancel_expiry_stay_fenced() {
+    use readb::{network_controller::request_digest, network_runtime::Call};
+    for case in 0..10 {
+        let (r, b) = registered_backend();
+        let c = b.claim(owner("network"), 90).unwrap();
+        let dispatched = std::cell::Cell::new(false);
+        let result = r.network.execute(
+            &r,
+            &c,
+            "quest",
+            enroll("quest"),
+            |call| match call {
+                Call::Status => Ok(serde_json::json!({"scoped_controller":true,"fenced":false})),
+                Call::Scoped { nonce, request } => {
+                    dispatched.set(true);
+                    assert!(b.release(&c).is_err());
+                    if case == 1 {
+                        return Err("reply_lost".into());
+                    }
+                    if case == 2 {
+                        return Ok(serde_json::json!({"outcome":"refused","error":"test_refusal"}));
+                    }
+                    r.network
+                        .authorize(&nonce, &request_digest(&request)?)
+                        .unwrap();
+                    if case == 6 {
+                        return Err("reply_lost_after_apply".into());
+                    }
+                    if case == 7 {
+                        return Ok(serde_json::json!({"outcome":"unexpected"}));
+                    }
+                    if case == 8 {
+                        return Ok(serde_json::json!({"outcome":"uncertain"}));
+                    }
+                    if case == 9 {
+                        fs::remove_file(b.config.dir.join("events.jsonl")).unwrap();
+                        fs::create_dir(b.config.dir.join("events.jsonl")).unwrap();
+                    }
+                    if case == 3 {
+                        b.cancel(&c).unwrap();
+                    }
+                    if case == 4 {
+                        b.state.lock().unwrap().gate.lease.as_mut().unwrap().expires = 0.;
+                    }
+                    Ok(serde_json::json!({"outcome":"applied"}))
+                }
+                _ => panic!("unexpected root call"),
+            },
+            || case != 5 || !dispatched.get(),
+        );
+        if case == 0 {
+            assert!(result.is_ok());
+            b.release(&c).unwrap();
+        } else if case == 2 {
+            assert!(result.unwrap_err().contains("test_refusal"));
+            b.release(&c).unwrap();
+        } else {
+            assert!(result.is_err());
+            assert!(b.status()["cleanup_unknown"].is_string());
+            assert!(
+                Backend::new(b.config.clone()).unwrap().status()["cleanup_unknown"].is_string()
+            );
+        }
+        fs::remove_dir_all(&r.root).unwrap();
+    }
+}

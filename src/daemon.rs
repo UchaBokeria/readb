@@ -33,6 +33,16 @@ fn reply(s: &mut UnixStream, v: &serde_json::Value, code: i32) {
     }
     let _ = crate::wire::frame(s, 3, &serde_json::to_vec(&json!({"code":code})).unwrap());
 }
+fn client_connected(s: &UnixStream) -> bool {
+    use std::os::fd::AsRawFd;
+    let mask = libc::POLLHUP | libc::POLLRDHUP | libc::POLLERR | libc::POLLNVAL;
+    let mut p = libc::pollfd {
+        fd: s.as_raw_fd(),
+        events: mask,
+        revents: 0,
+    };
+    (unsafe { libc::poll(&mut p, 1, 0) }) >= 0 && p.revents & mask == 0
+}
 pub fn control_client(mut s: UnixStream, r: Arc<Registry>) {
     let _ = s.set_read_timeout(Some(Duration::from_secs(10)));
     let _ = s.set_write_timeout(Some(Duration::from_secs(30)));
@@ -96,6 +106,41 @@ pub fn control_client(mut s: UnixStream, r: Arc<Registry>) {
                     events.drain(..events.len() - limit);
                 }
                 reply(&mut s, &json!({"events":events}), 0)
+            }
+        }
+        Ok(req) if req.action == "network-status" => {
+            match crate::network_runtime::call(crate::network_runtime::Call::Status) {
+                Ok(value) => reply(&mut s, &value, 0),
+                Err(error) => reply(&mut s, &json!({"error":error}), 73),
+            }
+        }
+        Ok(req) if req.action == "network-enroll" || req.action == "network-rm" => {
+            let result = (|| -> Res<serde_json::Value> {
+                let request = match (req.action.as_str(), req.args.as_slice()) {
+                    ("network-enroll", [key, address]) if crate::network::valid_key(key) => {
+                        crate::network::Request::Enroll {
+                            id: req.device.clone(),
+                            key: key.clone(),
+                            address: address.parse().map_err(|_| "invalid_network_address")?,
+                        }
+                    }
+                    ("network-rm", []) => crate::network::Request::Remove {
+                        id: req.device.clone(),
+                    },
+                    _ => return Err("invalid_network_arguments".into()),
+                };
+                r.network.execute(
+                    &r,
+                    &req.ticket,
+                    &req.device,
+                    request,
+                    crate::network_runtime::call,
+                    || client_connected(&s),
+                )
+            })();
+            match result {
+                Ok(value) => reply(&mut s, &value, 0),
+                Err(error) => reply(&mut s, &json!({"error":error}), 73),
             }
         }
         Ok(req) if req.action == "device-add" => {

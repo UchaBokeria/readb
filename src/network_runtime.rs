@@ -475,8 +475,11 @@ pub fn serve(policy_path: &Path, state: &Path) -> Res<()> {
     }
 }
 pub fn call(request: Call) -> Res<Value> {
-    let mut s = UnixStream::connect(SOCKET)
-        .map_err(|_| "network_helper_unavailable: install the narrow server helper first")?;
+    let mut s = crate::network_authority::connect_control()
+        .map_err(|_| "network_helper_unavailable: inspect the narrow server helper")?;
+    if crate::network_authority::peer_uid(&s)? != 0 {
+        return Err("network_helper_wrong_peer: root service required".into());
+    }
     s.set_read_timeout(Some(Duration::from_secs(15)))
         .map_err(|_| "network_timeout_failed")?;
     s.set_write_timeout(Some(Duration::from_secs(3)))

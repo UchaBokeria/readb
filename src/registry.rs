@@ -155,6 +155,24 @@ impl Registry {
         id: &str,
         request: &crate::network::Request,
     ) -> Res<(Arc<Backend>, String)> {
+        self.network_operation(ticket, id, request, true)
+    }
+    pub(crate) fn preflight_network(
+        &self,
+        ticket: &str,
+        id: &str,
+        request: &crate::network::Request,
+    ) -> Res<()> {
+        self.network_operation(ticket, id, request, false)
+            .map(|_| ())
+    }
+    fn network_operation(
+        &self,
+        ticket: &str,
+        id: &str,
+        request: &crate::network::Request,
+        start: bool,
+    ) -> Res<(Arc<Backend>, String)> {
         if !valid_id(id) {
             return Err("invalid_network_device".into());
         }
@@ -184,7 +202,12 @@ impl Registry {
             crate::network::Request::Remove { id: requested } if requested == id => "network-rm",
             _ => return Err("network_request_scope_mismatch".into()),
         };
-        let operation = backend.begin_network(ticket, label)?;
+        let operation = if start {
+            backend.begin_network(ticket, label)?
+        } else {
+            backend.preflight_network(ticket)?;
+            String::new()
+        };
         Ok((backend, operation))
     }
     pub fn status(&self) -> Value {

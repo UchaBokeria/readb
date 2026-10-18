@@ -239,6 +239,12 @@ impl Authority for FixedAuthority {
     }
 }
 fn connect() -> Res<UnixStream> {
+    connect_to(SOCKET)
+}
+pub(crate) fn connect_control() -> Res<UnixStream> {
+    connect_to("/run/readb-network/control.sock")
+}
+fn connect_to(path: &str) -> Res<UnixStream> {
     use std::os::fd::FromRawFd;
     let fd = unsafe {
         libc::socket(
@@ -256,7 +262,7 @@ fn connect() -> Res<UnixStream> {
     for (dst, src) in addr
         .sun_path
         .iter_mut()
-        .zip(SOCKET.as_bytes().iter().chain(std::iter::once(&0)))
+        .zip(path.as_bytes().iter().chain(std::iter::once(&0)))
     {
         *dst = *src as _;
     }

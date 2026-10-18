@@ -48,3 +48,8 @@ A signed companion and complete onboarding installer are not released yet.
 `device disconnect` pauses automatic reconnect for that device; `device connect`
 resumes it. `device rm --yes` retains its private files and requires a controller.
 Reusing a removed ID with retained keys needs explicit recovery; use a new ID.
+
+Network (development source): status uses the current context. Enroll/rm require
+a private controller ticket and exact configured device/address. Root maintenance
+is --local on the server. Old helpers refuse before intent; uncertain completion
+stays fenced. Inspect device/root state before retry. See network.md.
