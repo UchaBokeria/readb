@@ -139,3 +139,25 @@ Unknown installs stay untouched. Devices still need separate migration acceptanc
 This adapter requires systemd, an enabled wg-quick provider and existing tools.
 Fresh network creation, missing-tool installation and other init adapters remain
 unfinished. Do not retire old device services after an empty-registry setup.
+
+
+## Upgrade maintenance (development)
+
+The coordinator can close admission before a verified upgrade. This does not
+install files or stop a service. On the server, read `doctor` for the exact
+`config_fingerprint`, then use the root upgrade plan's SHA256 identity:
+
+```sh
+readb --local maintenance prepare --upgrade UPGRADE_SHA256 --config CONFIG_SHA256
+```
+
+Active controllers, viewers, transport work and cleanup fences refuse preparation.
+A private marker survives restart. Jobs, reports, keepalive transport and catalog
+writes stay blocked; `doctor` stays available. Never cancel another job to upgrade.
+
+`maintenance resume` takes the same two hashes. Use it only after the new files,
+processes, provider and setup binding are verified and the root transaction has
+saved its final release intent. It cannot undo shutdown. An unconfirmed resume
+requires upgrade-journal diagnosis; marker absence alone does not prove success.
+The root upgrade adapter and old-server bootstrap remain unfinished. Do not
+replace or discard a completed setup journal to change its binary binding.

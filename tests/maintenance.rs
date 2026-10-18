@@ -156,3 +156,23 @@ fn failed_publication_or_removal_never_claims_success() {
     drop(store);
     fs::remove_dir_all(p).unwrap();
 }
+#[test]
+fn startup_inspection_is_read_only_and_does_not_compete_for_writer_lock() {
+    let p = dir();
+    assert!(
+        readb::maintenance::inspect(&p, &"b".repeat(64))
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(fs::read_dir(&p).unwrap().count(), 0);
+    let mut store = Store::open(&p).unwrap();
+    assert!(
+        readb::maintenance::inspect(&p, &"b".repeat(64))
+            .unwrap()
+            .is_none()
+    );
+    store.publish(&marker()).unwrap();
+    assert!(readb::maintenance::inspect(&p, &"b".repeat(64)).unwrap() == Some(marker()));
+    drop(store);
+    fs::remove_dir_all(p).unwrap();
+}

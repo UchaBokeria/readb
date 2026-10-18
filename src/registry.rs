@@ -19,10 +19,20 @@ pub struct Registry {
     pub config_path: PathBuf,
     pub revision: std::sync::atomic::AtomicU64,
     pub closing: std::sync::atomic::AtomicBool,
+    shutdown_requested: std::sync::atomic::AtomicBool,
+    maintenance: Mutex<Option<crate::maintenance::Marker>>,
     pub listener_errors: Mutex<BTreeMap<String, String>>,
     catalog: Mutex<Catalog>,
     managed_servers: std::sync::atomic::AtomicBool,
     catalog_store: crate::catalog::Store,
+}
+fn fingerprint(config: &ServerConfig) -> Res<String> {
+    use sha2::Digest;
+    let bytes = serde_json::to_vec(config).map_err(|_| "maintenance_config_encoding_failed")?;
+    Ok(sha2::Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect())
 }
 struct Catalog {
     config: ServerConfig,
@@ -79,13 +89,15 @@ impl Registry {
             }
             devices.insert(d.id.clone(), Arc::new(b));
         }
-        Ok(Self {
+        let registry = Self {
             catalog_store: crate::catalog::Store::for_loaded_config(&root, &config_path, &config)?,
             root,
             network: Arc::new(crate::network_controller::NetworkController::new()),
             config_path,
             revision: std::sync::atomic::AtomicU64::new(1),
             closing: std::sync::atomic::AtomicBool::new(false),
+            shutdown_requested: std::sync::atomic::AtomicBool::new(false),
+            maintenance: Mutex::new(None),
             listener_errors: Mutex::new(BTreeMap::new()),
             managed_servers: std::sync::atomic::AtomicBool::new(false),
             web: Mutex::new(Default::default()),
@@ -94,7 +106,151 @@ impl Registry {
                 devices,
                 notifiers,
             }),
-        })
+        };
+        registry.refresh_maintenance()?;
+        Ok(registry)
+    }
+    pub fn config_fingerprint(&self) -> Res<String> {
+        fingerprint(&self.catalog.lock().unwrap().config)
+    }
+    pub fn prepare_maintenance(&self, upgrade: &str, config: &str) -> Res<Value> {
+        let expected = crate::maintenance::Marker::new(upgrade, config)?;
+        let catalog = self.catalog.lock().unwrap();
+        if self
+            .shutdown_requested
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err("coordinator_shutdown".into());
+        }
+        self.catalog_store.preflight()?;
+        if fingerprint(&catalog.config)? != config {
+            return Err("maintenance_config_changed".into());
+        }
+        let backends = catalog.devices.values().collect::<Vec<_>>();
+        let _transports = backends
+            .iter()
+            .map(|b| b.maintenance_transport())
+            .collect::<Res<Vec<_>>>()?;
+        let mut states = backends
+            .iter()
+            .map(|b| {
+                b.state
+                    .try_lock()
+                    .map_err(|_| "maintenance_state_busy".into())
+            })
+            .collect::<Res<Vec<_>>>()?;
+        for (backend, state) in backends.iter().zip(states.iter_mut()) {
+            backend.maintenance_quiet(state)?;
+        }
+        let mut store = crate::maintenance::Store::open(&self.root)?;
+        if self
+            .maintenance
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|m| m != &expected)
+        {
+            return Err("maintenance_owned_by_other_upgrade".into());
+        }
+        // Close cached admission even if publication has an ambiguous I/O error.
+        // Catalog+all transports+all states prevent a claim/report/keeper race.
+        self.closing
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        for state in &mut states {
+            state.maintenance = true;
+        }
+        *self.maintenance.lock().unwrap() = Some(expected.clone());
+        store.publish(&expected)?;
+        Ok(json!({"maintenance":expected,"ready_to_stop":true}))
+    }
+    /// Called again after acquiring the daemon runtime lock: a constructor read
+    /// alone can race an admitted offline publisher before serve obtains it.
+    pub fn refresh_maintenance(&self) -> Res<()> {
+        let catalog = self.catalog.lock().unwrap();
+        if self
+            .shutdown_requested
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err("coordinator_shutdown".into());
+        }
+        let config = fingerprint(&catalog.config)?;
+        let marker = crate::maintenance::inspect(&self.root, &config)?;
+        if marker.is_none() && self.maintenance.lock().unwrap().is_some() {
+            return Err("maintenance_marker_disappeared".into());
+        }
+        if let Some(marker) = marker {
+            self.catalog_store.preflight()?;
+            let backends = catalog.devices.values().collect::<Vec<_>>();
+            let _transports = backends
+                .iter()
+                .map(|b| b.maintenance_transport())
+                .collect::<Res<Vec<_>>>()?;
+            let mut states = backends
+                .iter()
+                .map(|b| {
+                    b.state
+                        .try_lock()
+                        .map_err(|_| "maintenance_state_busy".into())
+                })
+                .collect::<Res<Vec<_>>>()?;
+            if states.iter().any(|s| {
+                s.stopping
+                    || s.gate.lease.is_some()
+                    || !s.viewers.is_empty()
+                    || s.gate.active
+                    || !s.operations.is_empty()
+            }) {
+                return Err("maintenance_runtime_refresh_requires_idle".into());
+            }
+            self.closing
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            for state in &mut states {
+                state.maintenance = true;
+            }
+            *self.maintenance.lock().unwrap() = Some(marker);
+        }
+        Ok(())
+    }
+    pub fn resume_maintenance(&self, upgrade: &str, config: &str) -> Res<Value> {
+        let expected = crate::maintenance::Marker::new(upgrade, config)?;
+        let catalog = self.catalog.lock().unwrap();
+        if self
+            .shutdown_requested
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err("coordinator_shutdown".into());
+        }
+        self.catalog_store.preflight()?;
+        if fingerprint(&catalog.config)? != config {
+            return Err("maintenance_config_changed".into());
+        }
+        if self.maintenance.lock().unwrap().as_ref() != Some(&expected) {
+            return Err("maintenance_owner_mismatch".into());
+        }
+        let backends = catalog.devices.values().collect::<Vec<_>>();
+        let _transports = backends
+            .iter()
+            .map(|b| b.maintenance_transport())
+            .collect::<Res<Vec<_>>>()?;
+        let mut states = backends
+            .iter()
+            .map(|b| {
+                b.state
+                    .try_lock()
+                    .map_err(|_| "maintenance_state_busy".into())
+            })
+            .collect::<Res<Vec<_>>>()?;
+        for (backend, state) in backends.iter().zip(states.iter_mut()) {
+            backend.maintenance_quiet(state)?;
+        }
+        crate::maintenance::Store::open(&self.root)?.remove(&expected)?;
+        *self.maintenance.lock().unwrap() = None;
+        for state in &mut states {
+            state.maintenance = false;
+        }
+        self.closing
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        Ok(json!({"maintenance":null,"resumed":true}))
     }
     pub fn config(&self) -> ServerConfig {
         self.catalog.lock().unwrap().config.clone()
@@ -212,7 +368,7 @@ impl Registry {
     }
     pub fn status(&self) -> Value {
         let c = self.catalog.lock().unwrap();
-        json!({"schema":1,"pid":std::process::id(),"catalog_cleanup_unknown":self.catalog_store.fenced(),"listener_errors":*self.listener_errors.lock().unwrap(),"devices":c.config.devices.iter().map(|d|{let mut v=c.devices[&d.id].status();v["id"]=json!(d.id);v["name"]=json!(d.name);v["kind"]=json!(d.kind);v}).collect::<Vec<_>>()})
+        json!({"schema":1,"pid":std::process::id(),"config_fingerprint":fingerprint(&c.config).ok(),"maintenance":*self.maintenance.lock().unwrap(),"catalog_cleanup_unknown":self.catalog_store.fenced(),"listener_errors":*self.listener_errors.lock().unwrap(),"devices":c.config.devices.iter().map(|d|{let mut v=c.devices[&d.id].status();v["id"]=json!(d.id);v["name"]=json!(d.name);v["kind"]=json!(d.kind);v}).collect::<Vec<_>>()})
     }
     pub fn add(&self, d: Device, listener: Option<Listener>) -> Res<Value> {
         let mut c = self.catalog.lock().unwrap();
@@ -315,6 +471,8 @@ impl Registry {
     pub fn shutdown(&self) -> Res<()> {
         {
             let _c = self.catalog.lock().unwrap();
+            self.shutdown_requested
+                .store(true, std::sync::atomic::Ordering::SeqCst);
             self.closing
                 .store(true, std::sync::atomic::Ordering::SeqCst);
         }

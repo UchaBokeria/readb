@@ -51,6 +51,34 @@ pub fn control_client(mut s: UnixStream, r: Arc<Registry>) {
         .and_then(|b| Request::parse(&b));
     match req {
         Ok(req) if req.action == "status" && req.device.is_empty() => reply(&mut s, &r.status(), 0),
+        Ok(req) if req.action == "maintenance-prepare" || req.action == "maintenance-resume" => {
+            let result = (|| -> Res<serde_json::Value> {
+                if !req.device.is_empty()
+                    || req.observe
+                    || !req.ticket.is_empty()
+                    || req.owner.is_some()
+                    || req.evidence.is_some()
+                {
+                    return Err("maintenance_requires_server_scope".into());
+                }
+                let [upgrade, config] = req.args.as_slice() else {
+                    return Err("maintenance_requires_upgrade_and_config_hash".into());
+                };
+                if req.action == "maintenance-prepare" {
+                    r.prepare_maintenance(upgrade, config)
+                } else {
+                    let value = r.resume_maintenance(upgrade, config)?;
+                    // Restore a saved dashboard only after admission reopens.
+                    // A bind error is diagnostic; it must not undo release.
+                    crate::web::restore(r.clone());
+                    Ok(value)
+                }
+            })();
+            match result {
+                Ok(value) => reply(&mut s, &value, 0),
+                Err(error) => reply(&mut s, &json!({"error":error}), 73),
+            }
+        }
         Ok(req) if req.action == "history" => {
             let limit = match req.args.as_slice() {
                 [] => 200,
@@ -264,6 +292,7 @@ fn report(mut s: TcpStream, peer: std::net::IpAddr, r: Arc<Registry>, bind: std:
 
 pub fn serve(r: Arc<Registry>, stop: Arc<AtomicBool>) -> Res<()> {
     let _catalog_runtime = crate::catalog::runtime_lock(&r.root, &r.config_path)?;
+    r.refresh_maintenance()?;
     r.enable_owned_servers();
     let path = r.root.join("control.sock");
     if path.as_os_str().as_encoded_bytes().len() >= 108 {

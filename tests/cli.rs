@@ -8,6 +8,9 @@ fn help_and_completion_do_not_need_server_or_private_config() {
         vec!["context", "--help"],
         vec!["action", "--help"],
         vec!["service", "--help"],
+        vec!["maintenance", "--help"],
+        vec!["maintenance", "prepare", "--help"],
+        vec!["maintenance", "resume", "--help"],
         vec!["setup", "--help"],
         vec!["network", "--help"],
         vec!["network", "helper", "--help"],
@@ -164,4 +167,22 @@ fn network_installer_refuses_unprivileged_calls_before_touching_system_files() {
         assert!(!o.status.success());
         assert!(String::from_utf8_lossy(&o.stderr).contains("network_install_requires_root"));
     }
+}
+
+#[test]
+fn maintenance_requires_explicit_server_scope_before_context_or_state_access() {
+    let o = Command::new(env!("CARGO_BIN_EXE_readb"))
+        .args([
+            "maintenance",
+            "prepare",
+            "--upgrade",
+            &"a".repeat(64),
+            "--config",
+            &"b".repeat(64),
+        ])
+        .env("HOME", "/nonexistent")
+        .output()
+        .unwrap();
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("maintenance_requires_--local_on_server"));
 }

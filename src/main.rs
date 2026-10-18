@@ -54,6 +54,11 @@ enum Cmd {
         about = "Manage device network through the coordinator; root maintenance is local"
     )]
     Network(NetworkCmd),
+    #[command(
+        subcommand,
+        about = "Server upgrade barrier; does not install or stop services"
+    )]
+    Maintenance(MaintenanceCmd),
     #[command(about = "Run the coordinator")]
     Daemon {
         #[arg(long)]
@@ -124,6 +129,25 @@ enum Cmd {
     Completion { shell: clap_complete::Shell },
     #[command(about = "Print version")]
     Version,
+}
+#[derive(Subcommand)]
+enum MaintenanceCmd {
+    #[command(about = "Refuse busy jobs, persist a marker and close admission")]
+    Prepare {
+        #[arg(long)]
+        upgrade: String,
+        #[arg(long)]
+        config: String,
+    },
+    #[command(
+        about = "Release the exact marker after upgrade verification; not a recovery shortcut"
+    )]
+    Resume {
+        #[arg(long)]
+        upgrade: String,
+        #[arg(long)]
+        config: String,
+    },
 }
 #[derive(Subcommand)]
 enum NetworkCmd {
@@ -670,6 +694,14 @@ fn run() -> Res<i32> {
         }
         _ => {}
     }
+    if matches!(c.command, Cmd::Maintenance(_)) {
+        if !c.local {
+            return Err("maintenance_requires_--local_on_server".into());
+        }
+        if c.device.is_some() || c.ticket.is_some() {
+            return Err("maintenance_requires_server_scope".into());
+        }
+    }
     let context = client::select(c.context.as_deref(), c.local)?;
     let mut req = client::request("status", c.device.as_deref());
     let mut stream = false;
@@ -677,6 +709,20 @@ fn run() -> Res<i32> {
         req.ticket = client::read_ticket(p)?;
     }
     match &c.command {
+        Cmd::Maintenance(sub) => {
+            let (action, upgrade, config) = match sub {
+                MaintenanceCmd::Prepare { upgrade, config } => {
+                    ("maintenance-prepare", upgrade, config)
+                }
+                MaintenanceCmd::Resume { upgrade, config } => {
+                    ("maintenance-resume", upgrade, config)
+                }
+            };
+            readb::maintenance::Marker::new(upgrade, config)?;
+            req.action = action.into();
+            req.device.clear();
+            req.args = vec![upgrade.clone(), config.clone()];
+        }
         Cmd::Network(NetworkCmd::Status) => {
             req.action = "network-status".into();
             req.device.clear();

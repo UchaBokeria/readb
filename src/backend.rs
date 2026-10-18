@@ -81,6 +81,7 @@ pub struct State {
 
     pub paused: bool,
     pub stopping: bool,
+    pub maintenance: bool,
     pub gate: Gate,
     pub receipt: Receipt,
     pub target: Option<u16>,
@@ -159,6 +160,7 @@ impl Backend {
                 keepalive,
                 paused,
                 stopping: false,
+                maintenance: false,
                 gate,
                 receipt: Receipt::default(),
                 target: None,
@@ -350,6 +352,9 @@ impl Backend {
     fn check_running(s: &State) -> Res<()> {
         if s.stopping {
             return Err("coordinator_shutdown".into());
+        }
+        if s.maintenance {
+            return Err("coordinator_maintenance: upgrade pending".into());
         }
         Ok(())
     }
@@ -897,6 +902,30 @@ impl Backend {
         atomic(&self.config.dir.join("last-report.json"), &s.receipt)?;
         Ok(connected)
     }
+    pub(crate) fn maintenance_transport(&self) -> Res<std::sync::MutexGuard<'_, ()>> {
+        self.transport
+            .try_lock()
+            .map_err(|_| "maintenance_transport_busy".into())
+    }
+    pub(crate) fn maintenance_quiet(&self, s: &mut State) -> Res<()> {
+        if s.stopping {
+            return Err("coordinator_shutdown".into());
+        }
+        s.gate.expire(lease_now());
+        s.viewers.retain(|_, v| v.active || v.expires > lease_now());
+        if s.gate.cleanup_unknown.is_some() {
+            self.persist_fence(s)?;
+            return Err("maintenance_cleanup_unknown: reconcile device work first".into());
+        }
+        if s.gate.lease.is_some()
+            || !s.viewers.is_empty()
+            || s.gate.active
+            || !s.operations.is_empty()
+        {
+            return Err("maintenance_jobs_busy: release controllers and viewers first".into());
+        }
+        Ok(())
+    }
     pub(crate) fn preflight_network(&self, ticket: &str) -> Res<()> {
         let mut s = self.state.lock().unwrap();
         Self::check_running(&s)?;
@@ -1164,6 +1193,7 @@ impl Backend {
         let mut s = self.state.lock().unwrap();
         let pairing = s.operations.get(t).is_some_and(|op| op.pairing);
         if s.stopping
+            || s.maintenance
             || Self::network_active(&s)
             || (!pairing && !s.receipt.fresh(now()))
             || s.gate.cleanup_unknown.is_some()
@@ -1298,6 +1328,7 @@ impl Backend {
         };
         let s = self.state.lock().unwrap();
         if s.stopping
+            || s.maintenance
             || Self::network_active(&s)
             || !s.keepalive.enabled
             || !s.receipt.fresh(now())
