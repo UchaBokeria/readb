@@ -649,41 +649,14 @@ impl Installer {
         if self.fenced() {
             return Err("network_setup_files_cleanup_unknown".into());
         }
-        let bytes = serde_json::to_vec(policy).map_err(|_| "network_policy_encoding_failed")?;
-        if self.root.read(Path::new(POLICY_FILE))?.as_ref() != Some(&bytes)
-            || self.root.mode(Path::new(POLICY_FILE))? != Some(0o600)
-            || self.receipt()?.as_ref() != Some(&plan.receipt()?)
-            || self.root.read(Path::new(UNIT))?.as_deref() != Some(plan.unit().as_bytes())
-            || self.root.mode(Path::new(UNIT))? != Some(0o600)
-            || read_at(&self.state, POLICY_RECEIPT.as_ref())?.as_ref()
-                != Some(
-                    &serde_json::to_vec(&hash(&bytes))
-                        .map_err(|_| "network_policy_encoding_failed")?,
-                )
-        {
-            return Err("network_setup_files_verification_failed".into());
-        }
-        self.verify_release(&plan.receipt()?)?;
+        verify_file_contents(&self.root, &self.state, policy, plan)?;
         self.root.sync(Path::new(POLICY_FILE))?;
         self.root.sync(Path::new(UNIT))?;
         self.root.sync(Path::new(&plan.binary_path()[1..]))?;
         Ok(())
     }
     fn verify_release(&self, r: &Receipt) -> Res<()> {
-        let path = format!(
-            "usr/local/lib/readb-network/releases/{}/readb",
-            r.binary_sha
-        );
-        if self
-            .root
-            .read(Path::new(&path))?
-            .as_ref()
-            .is_none_or(|b| hash(b) != r.binary_sha)
-            || self.root.mode(Path::new(&path))? != Some(0o700)
-        {
-            return Err("network_install_previous_release_changed".into());
-        }
-        Ok(())
+        verify_release_contents(&self.root, r)
     }
     pub fn prepare(&mut self, plan: Plan, binary: &[u8]) -> Res<()> {
         if self.fenced() {
@@ -924,6 +897,74 @@ pub fn setup_journal_directory(image_root: &Path) -> Res<std::path::PathBuf> {
         return Err("setup_private_journal_required".into());
     }
     Ok(image_root.join("var/lib/readb-setup"))
+}
+
+/// Observe exact installed files without taking Manager's exclusive state lock.
+/// This grants no write authority and does not prove a running helper or network.
+pub fn inspect_setup_files(image_root: &Path, policy: &Policy, plan: &Plan) -> Res<()> {
+    let root = Root::open(image_root)?;
+    let state = root
+        .directory(Path::new(STATE), false)?
+        .ok_or("network_install_state_unavailable")?;
+    if state
+        .metadata()
+        .map_err(|_| "network_install_state_unavailable")?
+        .mode()
+        & 0o077
+        != 0
+    {
+        return Err("network_install_private_state_required".into());
+    }
+    verify_file_contents(&root, &state, policy, plan)
+}
+fn no_file_intent(state: &File) -> Res<()> {
+    for name in [INTENT, POLICY_INTENT] {
+        if read_at(state, name.as_ref())?.is_some() {
+            return Err("network_setup_files_cleanup_unknown".into());
+        }
+    }
+    Ok(())
+}
+fn verify_release_contents(root: &Root, r: &Receipt) -> Res<()> {
+    r.validate()?;
+    let path = format!(
+        "usr/local/lib/readb-network/releases/{}/readb",
+        r.binary_sha
+    );
+    if root
+        .read(Path::new(&path))?
+        .as_ref()
+        .is_none_or(|b| hash(b) != r.binary_sha)
+        || root.mode(Path::new(&path))? != Some(0o700)
+    {
+        return Err("network_install_previous_release_changed".into());
+    }
+    Ok(())
+}
+fn verify_file_contents(root: &Root, state: &File, policy: &Policy, plan: &Plan) -> Res<()> {
+    plan.validate()?;
+    policy.validate()?;
+    no_file_intent(state)?;
+    let bytes = serde_json::to_vec(policy).map_err(|_| "network_policy_encoding_failed")?;
+    let expected = plan.receipt()?;
+    let receipt: Option<Receipt> = read_at(state, RECEIPT.as_ref())?
+        .map(|b| serde_json::from_slice(&b).map_err(|_| "network_install_receipt_invalid"))
+        .transpose()?;
+    if bytes != serde_json::to_vec(&plan.policy).map_err(|_| "network_policy_encoding_failed")?
+        || root.read(Path::new(POLICY_FILE))?.as_ref() != Some(&bytes)
+        || root.mode(Path::new(POLICY_FILE))? != Some(0o600)
+        || receipt.as_ref() != Some(&expected)
+        || root.read(Path::new(UNIT))?.as_deref() != Some(plan.unit().as_bytes())
+        || root.mode(Path::new(UNIT))? != Some(0o600)
+        || read_at(state, POLICY_RECEIPT.as_ref())?.as_ref()
+            != Some(
+                &serde_json::to_vec(&hash(&bytes)).map_err(|_| "network_policy_encoding_failed")?,
+            )
+    {
+        return Err("network_setup_files_verification_failed".into());
+    }
+    verify_release_contents(root, &expected)?;
+    no_file_intent(state)
 }
 
 #[cfg(test)]

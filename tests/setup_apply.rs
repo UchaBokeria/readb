@@ -257,3 +257,51 @@ fn root_files_cli_has_explicit_recovery_and_rejects_client_routing() {
     assert!(!denied.status.success());
     assert!(String::from_utf8_lossy(&denied.stderr).contains("--local_on_server"));
 }
+
+#[test]
+fn selected_user_install_directory_is_bound_and_revalidated() {
+    use readb::setup_apply::bind_with_install_dir;
+    let default = bind(options(), owner(), policy(), snapshot(), b"b").unwrap();
+    assert_eq!(
+        default.install_dir,
+        PathBuf::from("/home/tester/.local/lib/readb")
+    );
+    let changed = bind_with_install_dir(
+        options(),
+        owner(),
+        policy(),
+        snapshot(),
+        b"b",
+        PathBuf::from("/home/tester/opt/readb"),
+    )
+    .unwrap();
+    assert_ne!(default.plan_sha256, changed.plan_sha256);
+    changed.validate(b"b").unwrap();
+    let mut tampered = changed;
+    tampered.install_dir = "/home/tester/other".into();
+    assert!(tampered.validate(b"b").is_err());
+    for bad in [
+        "relative",
+        "/",
+        "/home/tester",
+        "/home/other/readb",
+        "/home/tester/../root",
+        "/home/tester/a/./b",
+        "/home/tester/a//b",
+        "/home/tester/a%u",
+        "/home/tester/bad\n",
+    ] {
+        assert!(
+            bind_with_install_dir(
+                options(),
+                owner(),
+                policy(),
+                snapshot(),
+                b"b",
+                PathBuf::from(bad)
+            )
+            .is_err(),
+            "{bad}"
+        );
+    }
+}

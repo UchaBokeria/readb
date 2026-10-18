@@ -193,6 +193,12 @@ struct SetupOptions {
     #[arg(
         long,
         requires = "user",
+        help = "User-owned install path within the selected home; default ~/.local/lib/readb"
+    )]
+    install_dir: Option<PathBuf>,
+    #[arg(
+        long,
+        requires = "user",
         help = "First unused IPv4 for readb enrollment"
     )]
     range_first: Option<std::net::Ipv4Addr>,
@@ -424,6 +430,7 @@ fn run() -> Res<i32> {
                 listen_port,
                 reuse_interface,
                 user,
+                install_dir,
                 range_first,
                 range_last,
             } = options;
@@ -498,12 +505,16 @@ fn run() -> Res<i32> {
                 let snapshot = kernel.snapshot(&policy)?;
                 let binary =
                     std::fs::read("/proc/self/exe").map_err(|_| "executing_binary_unavailable")?;
-                let bound = readb::setup_apply::bind(
+                let destination = install_dir
+                    .clone()
+                    .unwrap_or_else(|| owner.home.join(".local/lib/readb"));
+                let bound = readb::setup_apply::bind_with_install_dir(
                     plan.options.clone(),
                     owner,
                     policy,
                     snapshot,
                     &binary,
+                    destination,
                 )?;
                 if files {
                     let result = if recover {

@@ -158,3 +158,19 @@ boot persistence or device cutover. Full helper activation/controller scope rema
 open. Review found a completion-cooldown bug; a failing regression preceded its fix.
 
 Host191 and Rust1.88/musl191 workspace tests, Clippy and formatting pass.
+
+
+Setup intent now binds the selected user's install directory, default
+~/.local/lib/readb; --install-dir must stay within that passwd home. Changed or
+unsafe paths reject recovery. A separate read-only root-file inspector coexists
+with the helper's exclusive state lock, writes nothing and checks exact policy,
+unit, immutable release and receipts with pending-intent checks before/after.
+This proves files only. It does not activate or prove the helper/process/network.
+
+Host194(serial test threads), Rust1.88/musl194, Clippy/fmt pass. Real Blackwall
+root filesystem proof passes lock coexistence, no mkdir, pending/edit refusal;
+fixture executable cleaned. One parallel host self-copy/exec test hit ETXTBSY;
+its isolated rerun and complete serial suite pass, cause not conclusively proved.
+Two overlapping validation attempts linked newly edited tests against a stale
+library; discarded, followed by frozen-tree checks above. No production effect.
+Full activation/controller scope/encrypted handover/device cutover remain open.

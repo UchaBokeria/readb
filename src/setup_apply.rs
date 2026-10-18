@@ -199,6 +199,7 @@ pub struct ApplyPlan {
     pub plan_sha256: String,
     pub baseline_sha256: String,
     pub owner: Owner,
+    pub install_dir: PathBuf,
     pub options: Options,
     pub policy: Policy,
     pub root_install: crate::network_install::Plan,
@@ -220,9 +221,35 @@ pub fn bind(
     options: Options,
     owner: Owner,
     policy: Policy,
-    mut baseline: Snapshot,
+    baseline: Snapshot,
     binary: &[u8],
 ) -> Res<ApplyPlan> {
+    let install_dir = owner.home.join(".local/lib/readb");
+    bind_with_install_dir(options, owner, policy, baseline, binary, install_dir)
+}
+fn validate_install_dir(owner: &Owner, dir: &std::path::Path) -> Res<()> {
+    let text = dir.to_str().ok_or("setup_install_dir_utf8_required")?;
+    if !dir.is_absolute()
+        || dir == owner.home
+        || !dir.starts_with(&owner.home)
+        || text[1..]
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
+        || text.bytes().any(|c| c < 32 || b"%\"\\".contains(&c))
+    {
+        return Err("setup_install_dir_must_be_safe_descendant_of_owner_home".into());
+    }
+    Ok(())
+}
+pub fn bind_with_install_dir(
+    options: Options,
+    owner: Owner,
+    policy: Policy,
+    mut baseline: Snapshot,
+    binary: &[u8],
+    install_dir: PathBuf,
+) -> Res<ApplyPlan> {
+    validate_install_dir(&owner, &install_dir)?;
     options.validate()?;
     owner.validate()?;
     policy.validate()?;
@@ -279,11 +306,12 @@ pub fn bind(
     baseline.addresses.sort();
     baseline.addresses.dedup();
     let root_install = crate::network_install::Plan::new(&policy, binary)?;
-    let plan_sha256 = hash(&(1u8, &options, &owner, &policy, &root_install))?;
+    let plan_sha256 = hash(&(2u8, &options, &owner, &install_dir, &policy, &root_install))?;
     Ok(ApplyPlan {
         schema: 1,
         plan_sha256,
         baseline_sha256: hash(&baseline)?,
+        install_dir,
         owner,
         options,
         policy,
@@ -299,10 +327,18 @@ pub fn bind(
 impl ApplyPlan {
     pub fn validate(&self, binary: &[u8]) -> Res<()> {
         self.owner.validate()?;
+        validate_install_dir(&self.owner, &self.install_dir)?;
         self.options.validate()?;
         self.policy.validate()?;
         let expected = crate::network_install::Plan::new(&self.policy, binary)?;
-        let expected_hash = hash(&(1u8, &self.options, &self.owner, &self.policy, &expected))?;
+        let expected_hash = hash(&(
+            2u8,
+            &self.options,
+            &self.owner,
+            &self.install_dir,
+            &self.policy,
+            &expected,
+        ))?;
         if self.schema != 1
             || self.plan_sha256 != expected_hash
             || serde_json::to_vec(&self.root_install).map_err(|_| "setup_apply_encoding_failed")?

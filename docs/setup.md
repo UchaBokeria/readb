@@ -111,3 +111,13 @@ Recovery syncs accepted files and parent directories before writing a receipt an
 clearing intent. Failed cleanup restores the pending fence best-effort; broken
 storage can prevent restoration, and the error explicitly requires inspection.
 A successful file install is not service/network/device acceptance.
+
+Bound setup also records the selected user's install destination. Use
+`--install-dir /home/USER/opt/readb` or keep `~/.local/lib/readb`. The path must be
+inside that passwd home. A changed path changes the recovery intent. The root
+files phase still does not install user files or activate a service.
+
+Post-activation code can inspect exact root policy/unit/release/receipts without
+acquiring the running helper's exclusive state lock. This inspector writes nothing,
+rejects pending intents and proves files only. It does not prove unit/process or
+network health; full activation orchestration remains pending.

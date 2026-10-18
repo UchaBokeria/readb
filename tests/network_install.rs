@@ -302,3 +302,30 @@ fn policy_recovery_never_overwrites_external_receipt_or_accepts_root_coordinator
     drop(i);
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn read_only_inspection_coexists_with_state_lock_and_rejects_pending_or_edits() {
+    let root = image();
+    let p = Plan::new(&policy(), b"binary").unwrap();
+    assert!(inspect_setup_files(&root, &policy(), &p).is_err());
+    assert!(!root.join("var").exists());
+    let mut installer = Installer::open(&root).unwrap();
+    installer.install_policy(&policy()).unwrap();
+    installer.install(p.clone(), b"binary").unwrap();
+    // Installer deliberately still holds the same exclusive directory lock
+    // Manager uses. Inspection neither acquires nor releases that lock.
+    inspect_setup_files(&root, &policy(), &p).unwrap();
+    assert!(Installer::open(&root).is_err());
+    let fence = root.join("var/lib/readb-network/policy-pending.json");
+    fs::write(&fence, b"unknown evidence").unwrap();
+    fs::set_permissions(&fence, fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(inspect_setup_files(&root, &policy(), &p).is_err());
+    assert_eq!(fs::read(&fence).unwrap(), b"unknown evidence");
+    fs::remove_file(fence).unwrap();
+    let unit = root.join("etc/systemd/system/readb-network.service");
+    fs::write(&unit, b"external edit").unwrap();
+    assert!(inspect_setup_files(&root, &policy(), &p).is_err());
+    assert_eq!(fs::read(unit).unwrap(), b"external edit");
+    drop(installer);
+    fs::remove_dir_all(root).unwrap();
+}
