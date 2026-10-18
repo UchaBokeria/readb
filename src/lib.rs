@@ -72,3 +72,5 @@ pub mod setup_upgrade_systemd;
 pub mod enrollment_profile;
 
 pub mod enrollment_journal;
+
+pub mod enrollment_ports;

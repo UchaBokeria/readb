@@ -52,6 +52,22 @@ impl ManagedServer {
         let probe = TcpListener::bind(address)
             .map_err(|_| "adb_server_port_busy: refusing to adopt an existing server")?;
 
+        Self::start_reserved(adb, dir, port, probe)
+    }
+    /// Transfer the already reserved descriptor without a release/rebind gap.
+    /// This grants no device job; the backend must independently check admission.
+    pub fn start_reserved(adb: &Path, dir: &Path, port: u16, probe: TcpListener) -> Res<Self> {
+        if port < 1024
+            || !adb.is_absolute()
+            || probe
+                .local_addr()
+                .map_err(|_| "adb_reservation_unavailable")?
+                != std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port))
+        {
+            return Err("adb_reservation_scope_mismatch".into());
+        }
+        crate::registry::private_dir(dir)?;
+
         let log = OpenOptions::new()
             .append(true)
             .create(true)

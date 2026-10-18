@@ -197,3 +197,12 @@ all-target Clippy with warnings denied, format and diff checks pass. Dedicated
 RED/GREEN logs exist for missing journal, barrier, sync handling and key-pair
 mismatch under Quickshard ignored `Logs/readb-enrollment-*`; no device test is
 claimed by these host checks.
+
+Physical reservation source slice: `Ports` owns actual loopback ADB and exact
+report listeners, refuses unknown occupied/wildcard/mismatched sockets, and can
+clone only the exact existing coordinator listener. Transfer is one-use. The
+owned ADB server accepts that same socket descriptor via `start_reserved`, without
+dropping and rebinding it. Its ordinary `start` wrapper preserves existing
+behavior. Three reservation tests plus both owned-server tests and all-target
+Clippy pass. This primitive is not yet connected to enrollment/daemon listener
+admission; it does not make a profile ready or change any live port.
