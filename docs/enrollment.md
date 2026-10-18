@@ -137,11 +137,14 @@ legitimate catalog edits cause an actionable strict refusal unless a specific
 compatible transition is independently verified; no silent checksum rebasing.
 
 Server preparation and full device acceptance are distinct. Hold the new-device
-barrier through preparation and private profile delivery acknowledgement. After
-the private output is fsynced, an explicit client acknowledgement may finalize the
-server enrollment and reopen normal pairing; first identity is still untrusted,
-and the phone has not been granted OS consent or boot acceptance. A lost output or
-ack resumes the same server material/request; an existing different output refuses.
+barrier through preparation and authenticated encrypted Android delivery. A synced
+private host output proves only that host file; its acknowledgement must not reopen
+pairing or finish Android enrollment. After a recipient request is authenticated,
+persist its exact identity/request hash and exact encrypted envelope for replay.
+Only a receipt authenticated by a per-delivery secret after atomic Android profile
+storage may permit typed finalization. First SSH/ADB identity, OS VPN consent and
+boot acceptance remain separate. A lost reply/receipt resumes the same committed
+material and envelope; an existing different host output refuses.
 Do not mark a profile generated/deliverable when the listener/firewall phase is
 still blocked. Full device/VPN/report/paired-identity acceptance remains separate.
 
@@ -225,3 +228,13 @@ keys. The lock contention returns `enrollment_busy`, leaves the catalog unchange
 and succeeds once allocation releases. The focused8 journal and7 registry checks
 pass. This closes that entry-point race; it does not implement typed enrollment
 catalog mutation yet.
+
+Private host-output source primitive: bounded validated Profile bytes go only to
+an owned safe absolute path. Every parent is walked without symlinks or other
+writers. New file is mode600 and atomically published with no overwrite; existing
+private singly linked identical bytes can be fsynced and acknowledged again.
+Different/partial/public/link output remains untouched. A post-rename sync error
+keeps the file and returns unconfirmed; exact retry rechecks and syncs it. Receipt
+contains only content fingerprint/recovered state. Two integration checks plus
+one injected sync-failure check pass (all21 library checks pass). No CLI transport,
+server completion or Android-delivery code is connected to this helper yet.

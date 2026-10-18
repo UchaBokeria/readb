@@ -74,3 +74,5 @@ pub mod enrollment_profile;
 pub mod enrollment_journal;
 
 pub mod enrollment_ports;
+
+pub mod enrollment_output;
