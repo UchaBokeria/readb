@@ -133,6 +133,26 @@ enum Cmd {
 #[derive(Subcommand)]
 enum MaintenanceCmd {
     #[command(hide = true)]
+    InspectInstall {
+        #[arg(long)]
+        prefix: PathBuf,
+        #[arg(long)]
+        image: PathBuf,
+        #[arg(long)]
+        sha: String,
+    },
+    #[command(hide = true)]
+    QuietMarker {
+        #[arg(long)]
+        file: PathBuf,
+        #[arg(long)]
+        upgrade: String,
+        #[arg(long)]
+        config: String,
+        #[arg(long)]
+        release: bool,
+    },
+    #[command(hide = true)]
     InspectEmpty {
         #[arg(long)]
         file: PathBuf,
@@ -221,6 +241,22 @@ enum NetworkCmd {
 }
 #[derive(Subcommand)]
 enum SetupCmd {
+    #[command(
+        about = "Restore an exact recorded empty staging upgrade; preserve VPN and all evidence"
+    )]
+    Rollback {
+        #[command(flatten)]
+        options: SetupOptions,
+        #[arg(long)]
+        recover: bool,
+        #[arg(long, conflicts_with = "recover")]
+        inspect: bool,
+        #[arg(
+            long,
+            help = "Root-owned mode700 recorded candidate when its release was not installed"
+        )]
+        upgrade_image: Option<PathBuf>,
+    },
     #[command(
         about = "Upgrade only an exact empty staging server; preserve original proof and VPN"
     )]
@@ -534,6 +570,9 @@ fn run() -> Res<i32> {
                 }
                 SetupCmd::Upgrade {
                     options, recover, ..
+                }
+                | SetupCmd::Rollback {
+                    options, recover, ..
                 } => (options, true, *recover, false, false, true),
             };
             let SetupOptions {
@@ -623,16 +662,36 @@ fn run() -> Res<i32> {
                     .clone()
                     .unwrap_or_else(|| owner.home.join(".local/lib/readb"));
                 if upgrade {
-                    let inspect = matches!(cmd, SetupCmd::Upgrade { inspect: true, .. });
-                    output(&readb::setup_upgrade_systemd::apply(
-                        plan.options.clone(),
-                        owner,
-                        policy,
-                        destination,
-                        &binary,
-                        recover,
-                        inspect,
-                    )?);
+                    let inspect = matches!(
+                        cmd,
+                        SetupCmd::Upgrade { inspect: true, .. }
+                            | SetupCmd::Rollback { inspect: true, .. }
+                    );
+                    let result = if let SetupCmd::Rollback { upgrade_image, .. } = cmd {
+                        readb::setup_upgrade_systemd::rollback(
+                            plan.options.clone(),
+                            owner,
+                            policy,
+                            destination,
+                            &binary,
+                            readb::setup_upgrade_systemd::RollbackOptions {
+                                recover,
+                                inspect,
+                                upgrade_image: upgrade_image.as_deref(),
+                            },
+                        )?
+                    } else {
+                        readb::setup_upgrade_systemd::apply(
+                            plan.options.clone(),
+                            owner,
+                            policy,
+                            destination,
+                            &binary,
+                            recover,
+                            inspect,
+                        )?
+                    };
+                    output(&result);
                     return Ok(0);
                 }
                 let bound = readb::setup_apply::bind_with_install_dir(
@@ -788,6 +847,26 @@ fn run() -> Res<i32> {
         if let Cmd::Maintenance(sub) = &c.command {
             let state = client::state_dir()?;
             let value = match sub {
+                MaintenanceCmd::InspectInstall { prefix, image, sha } => {
+                    Some(readb::setup_upgrade_systemd::inspect_install(
+                        &PathBuf::from(std::env::var_os("HOME").ok_or("HOME_unavailable")?),
+                        prefix,
+                        image,
+                        sha,
+                    )?)
+                }
+                MaintenanceCmd::QuietMarker {
+                    file,
+                    upgrade,
+                    config,
+                    release,
+                } => Some(readb::setup_upgrade_systemd::quiet_marker(
+                    &client::state_dir()?,
+                    file,
+                    upgrade,
+                    config,
+                    *release,
+                )?),
                 MaintenanceCmd::InspectEmpty { file } => {
                     Some(readb::setup_upgrade_systemd::inspect_empty(&state, file)?)
                 }

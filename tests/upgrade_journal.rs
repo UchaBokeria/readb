@@ -410,3 +410,111 @@ fn visible_ready_effect_requires_durable_adapter_confirmation() {
     drop(j);
     fs::remove_dir_all(p).unwrap();
 }
+
+struct Undo {
+    ready: [bool; 9],
+    calls: Vec<readb::setup_upgrade::RollbackAction>,
+    lose: Option<readb::setup_upgrade::RollbackAction>,
+}
+impl readb::setup_upgrade::RollbackActions for Undo {
+    fn admit(&mut self, _: &Journal) -> Result<(), String> {
+        Ok(())
+    }
+    fn inspect(&mut self, a: readb::setup_upgrade::RollbackAction) -> Result<Observation, String> {
+        let done = self.ready[a.index()];
+        Ok(Observation {
+            fingerprint: format!("{:064x}", a.index() * 2 + usize::from(done)),
+            ready: done,
+            retry_safe: !done,
+        })
+    }
+    fn apply(
+        &mut self,
+        a: readb::setup_upgrade::RollbackAction,
+        j: &mut Journal,
+        _: bool,
+    ) -> Result<(), String> {
+        if a == readb::setup_upgrade::RollbackAction::Binding {
+            j.publish_original_binding()?;
+        }
+        self.calls.push(a);
+        self.ready[a.index()] = true;
+        if self.lose == Some(a) {
+            self.lose = None;
+            Err("lost rollback ack".into())
+        } else {
+            Ok(())
+        }
+    }
+    fn confirm(
+        &mut self,
+        _: readb::setup_upgrade::RollbackAction,
+        _: &Journal,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+}
+#[test]
+fn rollback_preserves_forward_evidence_and_recovers_each_lost_reply_without_stop_replay() {
+    use readb::setup_upgrade::{self, Plan, ROLLBACK_ACTIONS};
+    for lost in ROLLBACK_ACTIONS {
+        let p = fixture();
+        let (old, new) = plans();
+        let mut v: serde_json::Value =
+            serde_json::from_slice(&fs::read(p.join("journal.json")).unwrap()).unwrap();
+        v["plan_sha256"] = serde_json::json!(old.plan_sha256);
+        let original = serde_json::to_vec(&v).unwrap();
+        fs::write(p.join("journal.json"), &original).unwrap();
+        let plan = Plan::new(&old, &new, b"old", b"new", &"b".repeat(64)).unwrap();
+        let mut j = Journal::begin(
+            inspect_completed(&p, &old.plan_sha256, &"b".repeat(64)).unwrap(),
+            plan.clone(),
+        )
+        .unwrap();
+        v["plan_sha256"] = serde_json::json!(new.plan_sha256);
+        let mut f = Fake {
+            ready: [false; 9],
+            calls: 0,
+            lose: None,
+            binding: serde_json::to_vec(&v).unwrap(),
+        };
+        setup_upgrade::run(&mut j, &mut f, false).unwrap();
+        let before: serde_json::Value =
+            serde_json::from_slice(&fs::read(p.join("upgrade.json")).unwrap()).unwrap();
+        j.begin_rollback(&"8".repeat(64)).unwrap();
+        let mut undo = Undo {
+            ready: [false; 9],
+            calls: vec![],
+            lose: Some(lost),
+        };
+        assert!(setup_upgrade::run_rollback(&mut j, &mut undo, false).is_err());
+        drop(j);
+        assert!(readb::setup_journal::Journal::open(&p, &old.plan_sha256).is_err());
+        let mut j = Journal::open(&p, &plan).unwrap();
+        assert!(setup_upgrade::run_rollback(&mut j, &mut undo, false).is_err());
+        assert!(j.begin_rollback(&"9".repeat(64)).is_err());
+        j.begin_rollback(&"8".repeat(64)).unwrap();
+        setup_upgrade::run_rollback(&mut j, &mut undo, true).unwrap();
+        assert!(j.rollback_complete());
+        assert!(!j.complete());
+        assert_eq!(undo.calls, ROLLBACK_ACTIONS);
+        setup_upgrade::run_rollback(&mut j, &mut undo, false).unwrap();
+        assert_eq!(undo.calls, ROLLBACK_ACTIONS);
+        assert!(setup_upgrade::run(&mut j, &mut f, true).is_err());
+        let after: serde_json::Value =
+            serde_json::from_slice(&fs::read(p.join("upgrade.json")).unwrap()).unwrap();
+        for k in ["plan", "original", "binding", "completed", "pending"] {
+            assert_eq!(before[k], after[k]);
+        }
+        assert_eq!(fs::read(p.join("journal.json")).unwrap(), original);
+        drop(j);
+        let legacy = readb::setup_journal::Journal::open(&p, &old.plan_sha256).unwrap();
+        drop(legacy);
+        let proof = inspect_completed(&p, &old.plan_sha256, &"b".repeat(64)).unwrap();
+        let j = Journal::begin(proof, plan).unwrap();
+        assert_eq!(j.completed_count(), 0);
+        drop(j);
+        assert_eq!(fs::read_dir(&p).unwrap().count(), 3);
+        fs::remove_dir_all(p).unwrap();
+    }
+}

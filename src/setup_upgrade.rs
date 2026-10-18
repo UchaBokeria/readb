@@ -120,6 +120,43 @@ impl Plan {
 }
 /// Read-only recovery input. Reconstruct and validate the entire expected plan
 /// before opening the executable recovery handle; this snapshot grants no effects.
+pub(crate) struct RecordInspection {
+    pub original: Vec<u8>,
+    pub count: Option<usize>,
+    pub pending: Option<RollbackAction>,
+    pub complete: bool,
+}
+pub(crate) fn inspect_record(path: &Path, plan: &Plan) -> Res<RecordInspection> {
+    let dir = setup_journal::directory(path)?;
+    let bytes = read(&dir, c"upgrade.json")?.ok_or("upgrade_no_recorded_operation")?;
+    let state: State = serde_json::from_slice(&bytes).map_err(|_| "upgrade_journal_invalid")?;
+    state.validate()?;
+    if state.plan != *plan {
+        return Err("upgrade_plan_changed".into());
+    }
+    let j = Journal {
+        dir,
+        state,
+        disk: Some(bytes),
+        poisoned: false,
+    };
+    j.check_setup()?;
+    Ok(RecordInspection {
+        original: j.original_setup().to_vec(),
+        count: j.rollback_count(),
+        pending: j.rollback_pending(),
+        complete: j.rollback_complete(),
+    })
+}
+pub(crate) fn recorded_rollback(path: &Path) -> Res<Option<bool>> {
+    let dir = setup_journal::directory(path)?;
+    let Some(bytes) = read(&dir, c"upgrade.json")? else {
+        return Ok(None);
+    };
+    let state: State = serde_json::from_slice(&bytes).map_err(|_| "upgrade_journal_invalid")?;
+    state.validate()?;
+    Ok(state.rollback.as_ref().map(RollbackState::complete))
+}
 pub fn recorded_plan(path: &Path) -> Res<Option<Plan>> {
     Ok(recorded_status(path)?.map(|(plan, _, _)| plan))
 }
@@ -187,10 +224,15 @@ struct State {
     binding: Option<Vec<u8>>,
     completed: Vec<Receipt>,
     pending: Option<Pending>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rollback: Option<RollbackState>,
 }
 impl State {
     fn validate(&self) -> Res<()> {
         self.plan.validate()?;
+        if let Some(r) = &self.rollback {
+            r.validate()?;
+        }
         if self.schema != 1
             || self.original.len() > 16384
             || self.completed.len() > ACTIONS.len()
@@ -302,13 +344,22 @@ pub(crate) fn ensure_complete(dir: &File) -> Res<()> {
     if let Some(bytes) = read(dir, c"upgrade.json")? {
         let s: State = serde_json::from_slice(&bytes).map_err(|_| "upgrade_journal_invalid")?;
         s.validate()?;
-        if s.pending.is_some() || s.completed.len() != ACTIONS.len() {
-            return Err("setup_upgrade_pending: use exact upgrade recovery before setup".into());
-        }
-        setup_journal::admit_successor(
-            &setup_journal::existing(dir)?,
-            s.binding.as_ref().ok_or("upgrade_binding_missing")?,
-        )?;
+        let binding = if let Some(r) = &s.rollback {
+            if !r.complete() {
+                return Err(
+                    "setup_rollback_pending: use exact rollback recovery before setup".into(),
+                );
+            }
+            &s.original
+        } else {
+            if s.pending.is_some() || s.completed.len() != ACTIONS.len() {
+                return Err(
+                    "setup_upgrade_pending: use exact upgrade recovery before setup".into(),
+                );
+            }
+            s.binding.as_ref().ok_or("upgrade_binding_missing")?
+        };
+        setup_journal::admit_successor(&setup_journal::existing(dir)?, binding)?;
     }
     Ok(())
 }
@@ -332,20 +383,37 @@ impl Journal {
             let prior: State =
                 serde_json::from_slice(bytes).map_err(|_| "upgrade_journal_invalid")?;
             prior.validate()?;
-            if prior.pending.is_some()
-                || prior.completed.len() != ACTIONS.len()
-                || prior.plan.new != plan.old
-                || prior.plan.provider != plan.provider
-            {
-                return Err("upgrade_already_recorded: inspect exact existing upgrade".into());
+            let prior_binding = if prior.rollback.as_ref().is_some_and(RollbackState::complete) {
+                if prior.plan.old != plan.old {
+                    return Err("rollback_original_plan_changed".into());
+                }
+                &prior.original
+            } else {
+                if prior.rollback.is_some()
+                    || prior.pending.is_some()
+                    || prior.completed.len() != ACTIONS.len()
+                    || prior.plan.new != plan.old
+                {
+                    return Err("upgrade_already_recorded: inspect exact existing upgrade".into());
+                }
+                prior.binding.as_ref().ok_or("upgrade_binding_missing")?
+            };
+            if prior.plan.provider != plan.provider {
+                return Err("upgrade_provider_changed".into());
             }
-            setup_journal::admit_successor(
-                &proof.bytes,
-                prior.binding.as_ref().ok_or("upgrade_binding_missing")?,
-            )?;
-            let name =
+            setup_journal::admit_successor(&proof.bytes, prior_binding)?;
+            let first =
                 std::ffi::CString::new(format!("upgrade-history-{}.json", prior.plan.identity()))
                     .unwrap();
+            let name = match read(&proof.dir, &first)? {
+                Some(existing) if existing != *bytes => std::ffi::CString::new(format!(
+                    "upgrade-history-{}-{}.json",
+                    prior.plan.identity(),
+                    hash(bytes)
+                ))
+                .unwrap(),
+                _ => first,
+            };
             match read(&proof.dir, &name)? {
                 Some(existing) if existing == *bytes => proof
                     .dir
@@ -364,6 +432,7 @@ impl Journal {
                 binding: None,
                 completed: vec![],
                 pending: None,
+                rollback: None,
             },
             disk,
             poisoned: false,
@@ -437,6 +506,23 @@ impl Journal {
             return Err("upgrade_journal_changed_externally".into());
         }
         let current = setup_journal::existing(&self.dir)?;
+        if let Some(r) = &self.state.rollback {
+            if r.completed.len() > RollbackAction::Binding.index() {
+                if r.complete() {
+                    setup_journal::admit_successor(&current, &self.state.original)?;
+                } else if current != self.state.original {
+                    return Err("rollback_original_binding_changed".into());
+                }
+                return Ok(());
+            }
+            if r.pending
+                .as_ref()
+                .is_some_and(|p| p.action == RollbackAction::Binding)
+                && current == self.state.original
+            {
+                return Ok(());
+            }
+        }
         if self.state.completed.len() > Action::Binding.index() {
             if self.complete() {
                 setup_journal::admit_successor(
@@ -470,7 +556,9 @@ impl Journal {
         publish: impl FnOnce(&File, &std::ffi::CStr, &[u8], bool) -> Res<()>,
     ) -> Res<()> {
         self.check_setup()?;
-        if self.state.pending.as_ref().map(|p| p.action) != Some(Action::Binding) {
+        if self.state.rollback.is_some()
+            || self.state.pending.as_ref().map(|p| p.action) != Some(Action::Binding)
+        {
             return Err("upgrade_binding_phase_not_admitted".into());
         }
         if bytes.len() > 16384 {
@@ -490,6 +578,7 @@ impl Journal {
     }
     pub fn complete(&self) -> bool {
         !self.poisoned
+            && self.state.rollback.is_none()
             && self.state.pending.is_none()
             && self.state.completed.len() == ACTIONS.len()
     }
@@ -526,6 +615,9 @@ pub trait Actions {
 }
 pub fn run(j: &mut Journal, adapter: &mut impl Actions, recover: bool) -> Res<()> {
     j.check_setup()?;
+    if j.state.rollback.is_some() {
+        return Err("upgrade_has_rollback: preserve recorded rollback".into());
+    }
     if j.pending().is_some() && !recover {
         return Err("upgrade_cleanup_unknown: explicit exact recovery required".into());
     }
@@ -571,6 +663,207 @@ pub fn run(j: &mut Journal, adapter: &mut impl Actions, recover: bool) -> Res<()
         }
         let p = j.state.pending.take().unwrap();
         j.state.completed.push(Receipt {
+            action,
+            before: p.before,
+            after: after.fingerprint,
+        });
+        j.persist()?;
+    }
+    j.check_setup()?;
+    adapter.admit(j)?;
+    Ok(())
+}
+
+/// Rollback starts legacy code only after the original binding and marker release
+/// are durable. A separate progress stream preserves all forward receipts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RollbackAction {
+    Maintenance,
+    StopUser,
+    StopHelper,
+    RootFiles,
+    UserFiles,
+    StartHelper,
+    Binding,
+    Release,
+    StartUser,
+}
+pub const ROLLBACK_ACTIONS: [RollbackAction; 9] = [
+    RollbackAction::Maintenance,
+    RollbackAction::StopUser,
+    RollbackAction::StopHelper,
+    RollbackAction::RootFiles,
+    RollbackAction::UserFiles,
+    RollbackAction::StartHelper,
+    RollbackAction::Binding,
+    RollbackAction::Release,
+    RollbackAction::StartUser,
+];
+impl RollbackAction {
+    pub fn index(self) -> usize {
+        ROLLBACK_ACTIONS.iter().position(|a| *a == self).unwrap()
+    }
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RollbackReceipt {
+    action: RollbackAction,
+    before: String,
+    after: String,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RollbackPending {
+    action: RollbackAction,
+    before: String,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RollbackState {
+    schema: u8,
+    orchestrator: String,
+    completed: Vec<RollbackReceipt>,
+    pending: Option<RollbackPending>,
+}
+impl RollbackState {
+    fn complete(&self) -> bool {
+        self.pending.is_none() && self.completed.len() == ROLLBACK_ACTIONS.len()
+    }
+    fn validate(&self) -> Res<()> {
+        if self.schema != 1
+            || !valid(&self.orchestrator)
+            || self.completed.len() > ROLLBACK_ACTIONS.len()
+            || self.completed.iter().enumerate().any(|(i, r)| {
+                r.action != ROLLBACK_ACTIONS[i] || !valid(&r.before) || !valid(&r.after)
+            })
+            || self.pending.as_ref().is_some_and(|p| {
+                ROLLBACK_ACTIONS.get(self.completed.len()) != Some(&p.action) || !valid(&p.before)
+            })
+        {
+            return Err("rollback_journal_invalid".into());
+        }
+        Ok(())
+    }
+}
+impl Journal {
+    pub fn begin_rollback(&mut self, image: &str) -> Res<()> {
+        self.check_setup()?;
+        if !valid(image) {
+            return Err("rollback_orchestrator_hash_invalid".into());
+        }
+        if let Some(r) = &self.state.rollback {
+            if r.orchestrator != image {
+                return Err("rollback_orchestrator_changed: use exact recorded image".into());
+            }
+            return Ok(());
+        }
+        self.state.rollback = Some(RollbackState {
+            schema: 1,
+            orchestrator: image.into(),
+            completed: vec![],
+            pending: None,
+        });
+        self.persist()
+    }
+    pub fn rollback_complete(&self) -> bool {
+        !self.poisoned
+            && self
+                .state
+                .rollback
+                .as_ref()
+                .is_some_and(RollbackState::complete)
+    }
+    pub fn rollback_count(&self) -> Option<usize> {
+        self.state.rollback.as_ref().map(|r| r.completed.len())
+    }
+    pub fn rollback_pending(&self) -> Option<RollbackAction> {
+        self.state
+            .rollback
+            .as_ref()
+            .and_then(|r| r.pending.as_ref().map(|p| p.action))
+    }
+    pub(crate) fn rollback_before(&self) -> Option<&str> {
+        self.state
+            .rollback
+            .as_ref()
+            .and_then(|r| r.pending.as_ref().map(|p| p.before.as_str()))
+    }
+    pub fn publish_original_binding(&mut self) -> Res<()> {
+        self.publish_original_with(write)
+    }
+    fn publish_original_with(
+        &mut self,
+        publish: impl FnOnce(&File, &std::ffi::CStr, &[u8], bool) -> Res<()>,
+    ) -> Res<()> {
+        self.check_setup()?;
+        if self.rollback_pending() != Some(RollbackAction::Binding) {
+            return Err("rollback_binding_phase_not_admitted".into());
+        }
+        if let Err(e) = publish(&self.dir, c"journal.json", &self.state.original, false) {
+            self.poisoned = true;
+            return Err(e);
+        }
+        Ok(())
+    }
+}
+pub trait RollbackActions {
+    fn admit(&mut self, journal: &Journal) -> Res<()>;
+    fn inspect(&mut self, action: RollbackAction) -> Res<Observation>;
+    fn apply(&mut self, action: RollbackAction, journal: &mut Journal, recover: bool) -> Res<()>;
+    fn confirm(&mut self, action: RollbackAction, journal: &Journal) -> Res<()>;
+}
+pub fn run_rollback(j: &mut Journal, adapter: &mut impl RollbackActions, recover: bool) -> Res<()> {
+    j.check_setup()?;
+    let state = j.state.rollback.as_ref().ok_or("rollback_not_admitted")?;
+    if state.pending.is_some() && !recover {
+        return Err("rollback_cleanup_unknown: explicit exact recovery required".into());
+    }
+    for action in ROLLBACK_ACTIONS.into_iter().skip(state.completed.len()) {
+        j.check_setup()?;
+        adapter.admit(j)?;
+        let observed = adapter.inspect(action)?;
+        if !valid(&observed.fingerprint) {
+            return Err("rollback_observation_invalid".into());
+        }
+        let pending = j.rollback_pending().is_some();
+        if let Some(p) = &j.state.rollback.as_ref().unwrap().pending {
+            if p.action != action
+                || (!observed.ready && (!observed.retry_safe || observed.fingerprint != p.before))
+            {
+                return Err("rollback_unknown_state: preserve pending operation".into());
+            }
+        } else {
+            if !observed.ready && !observed.retry_safe {
+                return Err("rollback_before_state_unsafe".into());
+            }
+            j.state.rollback.as_mut().unwrap().pending = Some(RollbackPending {
+                action,
+                before: observed.fingerprint.clone(),
+            });
+            j.persist()?;
+        }
+        j.check_setup()?;
+        if !observed.ready {
+            adapter.apply(action, j, pending && recover)?;
+        }
+        let after = adapter.inspect(action)?;
+        if !after.ready || !valid(&after.fingerprint) {
+            return Err("rollback_effect_unconfirmed".into());
+        }
+        adapter.confirm(action, j)?;
+        j.check_setup()?;
+        if action == RollbackAction::Binding {
+            if setup_journal::existing(&j.dir)? != j.state.original {
+                return Err("rollback_binding_effect_unconfirmed".into());
+            }
+            // Even a ready observation needs directory durability, e.g. original bytes
+            // were already visible before rollback or after a lost publication reply.
+            j.publish_original_binding()?;
+        }
+        let r = j.state.rollback.as_mut().unwrap();
+        let p = r.pending.take().unwrap();
+        r.completed.push(RollbackReceipt {
             action,
             before: p.before,
             after: after.fingerprint,
@@ -682,6 +975,48 @@ mod tests {
         assert!(!j.complete());
         drop(j);
         assert!(setup_journal::Journal::open(&p, &plan.new).is_err());
+        std::fs::remove_dir_all(p).unwrap();
+    }
+    #[test]
+    fn rollback_binding_sync_ambiguity_keeps_forward_and_rollback_pending() {
+        let (p, mut j, plan) = fixture();
+        j.begin_rollback(&"8".repeat(64)).unwrap();
+        let r = j.state.rollback.as_mut().unwrap();
+        r.completed = ROLLBACK_ACTIONS[..RollbackAction::Binding.index()]
+            .iter()
+            .map(|a| RollbackReceipt {
+                action: *a,
+                before: "e".repeat(64),
+                after: "f".repeat(64),
+            })
+            .collect();
+        r.pending = Some(RollbackPending {
+            action: RollbackAction::Binding,
+            before: "e".repeat(64),
+        });
+        j.persist().unwrap();
+        let original = j.original_setup().to_vec();
+        assert!(
+            j.publish_original_with(|d, n, b, e| write_sync(d, n, b, e, fail))
+                .is_err()
+        );
+        assert!(j.check_setup().is_err());
+        drop(j);
+        assert!(
+            Journal::open_with(&p, &plan, |d, n, b, e| if n == c"journal.json" {
+                write_sync(d, n, b, e, fail)
+            } else {
+                write(d, n, b, e)
+            })
+            .is_err()
+        );
+        let j = Journal::open(&p, &plan).unwrap();
+        assert_eq!(j.rollback_pending(), Some(RollbackAction::Binding));
+        assert!(!j.rollback_complete());
+        assert!(!j.complete());
+        assert_eq!(j.original_setup(), original);
+        drop(j);
+        assert!(setup_journal::Journal::open(&p, &plan.old).is_err());
         std::fs::remove_dir_all(p).unwrap();
     }
 }

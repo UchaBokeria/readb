@@ -184,3 +184,27 @@ binding before offline marker publication. Busy, unknown, edited or nonempty
 state refuses. New files/services and activation receipts are verified before
 the new setup binding and final release. Old images/journal bytes stay retained.
 No host reboot, VPN restart, device cutover or general rollback is performed.
+
+## Empty-staging rollback
+
+Use root on the server. Keep the original setup flags and recorded images.
+
+```sh
+readb --local setup rollback [original setup flags] --inspect
+readb --local setup rollback [original setup flags]
+# After interruption: same rollback binary and flags, plus --recover.
+```
+
+Rollback has its own durable progress. It preserves the forward journal, restores
+old files and the original setup binding, releases maintenance, then starts the
+old coordinator last. A lost reply never replays completed stops. An already
+released old coordinator can keep its later catalog work; recovery does not
+force it idle. Unknown edits or another maintenance owner block recovery.
+
+If forward upgrade stopped before retaining its new release, add
+`--upgrade-image /protected/path/readb`. That file must be root-owned, mode700,
+under protected directories, and match the recorded image hash. A changed
+retained release cannot use this fallback. No missing image is guessed.
+
+Initial rollback supports empty staging only. It does not migrate devices,
+restart a host/VPN, clear an unknown intent or discard earlier evidence.

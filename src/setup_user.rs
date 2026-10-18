@@ -42,6 +42,16 @@ fn groups(owner: &Owner) -> Res<Vec<libc::gid_t>> {
     }
 }
 fn run_image(owner: &Owner, args: &[String], extra: &[(&str, &str)]) -> Res<Captured> {
+    let bytes =
+        std::fs::read("/proc/self/exe").map_err(|_| "setup_user_executing_binary_unavailable")?;
+    run_bytes(owner, args, extra, &bytes)
+}
+fn run_bytes(
+    owner: &Owner,
+    args: &[String],
+    extra: &[(&str, &str)],
+    bytes: &[u8],
+) -> Res<Captured> {
     // Re-resolve immediately. A stale serialized owner cannot choose another UID/home.
     let current = Owner::resolve(&owner.name)?;
     if serde_json::to_vec(&current).map_err(|_| "setup_user_encoding_failed")?
@@ -55,8 +65,6 @@ fn run_image(owner: &Owner, args: &[String], extra: &[(&str, &str)]) -> Res<Capt
         return Err("setup_user_root_or_same_identity_required".into());
     }
     let group_ids = groups(owner)?;
-    let bytes =
-        std::fs::read("/proc/self/exe").map_err(|_| "setup_user_executing_binary_unavailable")?;
     let fd = unsafe {
         libc::memfd_create(
             c"readb-user-install".as_ptr(),
@@ -68,7 +76,7 @@ fn run_image(owner: &Owner, args: &[String], extra: &[(&str, &str)]) -> Res<Capt
     }
     let mut image = unsafe { File::from_raw_fd(fd) };
     image
-        .write_all(&bytes)
+        .write_all(bytes)
         .map_err(|_| "setup_user_image_write_failed")?;
     image
         .set_permissions(Permissions::from_mode(0o555))
@@ -177,6 +185,16 @@ pub(crate) fn install_for_recover(
     prefix: &Path,
     recover: bool,
 ) -> Res<serde_json::Value> {
+    let bytes =
+        std::fs::read("/proc/self/exe").map_err(|_| "setup_user_executing_binary_unavailable")?;
+    install_image(owner, prefix, recover, &bytes)
+}
+pub(crate) fn install_image(
+    owner: &Owner,
+    prefix: &Path,
+    recover: bool,
+    bytes: &[u8],
+) -> Res<serde_json::Value> {
     if !prefix.is_absolute() {
         return Err("setup_user_absolute_prefix_required".into());
     }
@@ -192,7 +210,7 @@ pub(crate) fn install_for_recover(
     if recover {
         args.push("--recover".into());
     }
-    let result = run_image(owner, &args, &[]).map_err(|e| {
+    let result = run_bytes(owner, &args, &[], bytes).map_err(|e| {
         format!("setup_user_install_unconfirmed: {e}; inspect selected-user files before retry")
     })?;
     if !result.ok {

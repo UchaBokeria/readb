@@ -66,3 +66,48 @@ fn offline_empty_inspection_never_creates_a_missing_catalog_binding() {
     assert!(readb::setup_upgrade_systemd::inspect_empty(&state, &file).is_ok());
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn quiet_marker_requires_existing_binding_and_real_runtime_lock() {
+    use std::{fs, os::unix::fs::PermissionsExt};
+    let root =
+        std::env::temp_dir().join(format!("readb-rollback-lock-{}", readb::policy::random()));
+    fs::create_dir(&root).unwrap();
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+    let state = root.join("state");
+    fs::create_dir(&state).unwrap();
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
+    let file = root.join("server.json");
+    fs::write(
+        &file,
+        serde_json::to_vec(&json!({"schema":1,"adb":"/not-executed","devices":[],"listeners":[]}))
+            .unwrap(),
+    )
+    .unwrap();
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+    let pin = "b".repeat(64);
+    let tag = "a".repeat(64);
+    assert!(readb::setup_upgrade_systemd::quiet_marker(&state, &file, &tag, &pin, false).is_err());
+    assert!(!state.join("upgrade-maintenance.json").exists());
+    readb::catalog::Store::new(&state, &file)
+        .preflight()
+        .unwrap();
+    let pin =
+        readb::setup_upgrade_systemd::inspect_empty(&state, &file).unwrap()["config_fingerprint"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+    let runtime = readb::catalog::runtime_lock(&state, &file).unwrap();
+    assert!(readb::setup_upgrade_systemd::quiet_marker(&state, &file, &tag, &pin, false).is_err());
+    assert!(!state.join("upgrade-maintenance.json").exists());
+    drop(runtime);
+    readb::setup_upgrade_systemd::quiet_marker(&state, &file, &tag, &pin, false).unwrap();
+    assert!(
+        readb::setup_upgrade_systemd::quiet_marker(&state, &file, &"c".repeat(64), &pin, true)
+            .is_err()
+    );
+    readb::setup_upgrade_systemd::quiet_marker(&state, &file, &tag, &pin, true).unwrap();
+    readb::setup_upgrade_systemd::quiet_marker(&state, &file, &tag, &pin, true).unwrap();
+    assert!(!state.join("upgrade-maintenance.json").exists());
+    fs::remove_dir_all(root).unwrap();
+}

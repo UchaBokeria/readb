@@ -290,6 +290,9 @@ fn install_binding(p: &InstallPlan, home: &Path) -> Res<String> {
     .collect())
 }
 pub fn inspect(p: &InstallPlan, home: &Path) -> Res<Value> {
+    inspect_for_binary(p, home, &executing_bytes()?)
+}
+pub(crate) fn inspect_for_binary(p: &InstallPlan, home: &Path, binary: &[u8]) -> Res<Value> {
     if unsafe { libc::geteuid() } == 0 {
         return Err("user_inspection_requires_nonroot_identity".into());
     }
@@ -314,7 +317,7 @@ pub fn inspect(p: &InstallPlan, home: &Path) -> Res<Value> {
             &core_for(p, bytes),
         )
     };
-    let status = match inspect_for(p, executing_bytes()?) {
+    let status = match inspect_for(p, binary.to_vec()) {
         Ok(status) => status,
         Err(original) => {
             // An upgrade is admitted only by the old exact receipt, immutable

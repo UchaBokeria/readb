@@ -399,3 +399,41 @@ fn upgrade_file_recovery_admission_binds_exact_old_new_and_partial_artifacts() {
     assert_eq!(fs::read(unit).unwrap(), b"external edit");
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn pinned_upgrade_candidate_refuses_changed_writable_or_linked_images() {
+    use sha2::{Digest, Sha256};
+    let root = image();
+    let dir = root.join("candidates");
+    fs::create_dir(&dir).unwrap();
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+    let path = dir.join("readb");
+    fs::write(&path, b"pinned candidate").unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+    let digest = Sha256::digest(b"pinned candidate")
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    assert_eq!(
+        inspect_candidate(&root, std::path::Path::new("/candidates/readb"), &digest).unwrap(),
+        b"pinned candidate"
+    );
+    assert!(
+        inspect_candidate(
+            &root,
+            std::path::Path::new("/candidates/readb"),
+            &"a".repeat(64)
+        )
+        .is_err()
+    );
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(inspect_candidate(&root, std::path::Path::new("/candidates/readb"), &digest).is_err());
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o777)).unwrap();
+    assert!(inspect_candidate(&root, std::path::Path::new("/candidates/readb"), &digest).is_err());
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::remove_file(&path).unwrap();
+    symlink("/usr/bin/true", &path).unwrap();
+    assert!(inspect_candidate(&root, std::path::Path::new("/candidates/readb"), &digest).is_err());
+    fs::remove_dir_all(root).unwrap();
+}

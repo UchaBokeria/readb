@@ -629,6 +629,55 @@ pub(crate) fn inspect_managed_baseline(
     Ok((receipt, baseline))
 }
 
+/// Compatibility with the retained helper before ProviderBaseline existed.
+/// Status is obtained only through the protected credential-checked root socket.
+/// Exclude exact recorded keys/routes, never all addresses in the managed range.
+pub(crate) fn inspect_legacy_baseline(
+    policy: &Policy,
+    listen_port: u16,
+) -> Res<(Receipt, Snapshot)> {
+    use crate::network::Kernel;
+    if unsafe { libc::geteuid() } != 0 {
+        return Err("provider_inspection_requires_root".into());
+    }
+    let status = crate::network_runtime::call(crate::network_runtime::Call::Status)?;
+    if status["fenced"] != false
+        || status["interface_verified"] != true
+        || status["interface"] != policy.interface
+    {
+        return Err("provider_legacy_helper_unhealthy".into());
+    }
+    let devices: BTreeMap<String, crate::network::Peer> =
+        serde_json::from_value(status["devices"].clone())
+            .map_err(|_| "provider_legacy_devices_invalid")?;
+    let mut kernel = crate::network_runtime::LinuxKernel::new()?;
+    let live = kernel.snapshot(policy)?;
+    let mut external = live.clone();
+    for peer in devices.values() {
+        let routes = external
+            .peers
+            .remove(&peer.key)
+            .ok_or("provider_legacy_peer_missing")?;
+        if routes != vec![format!("{}/32", peer.address)] {
+            return Err("provider_legacy_peer_routes_changed".into());
+        }
+    }
+    let digest: String =
+        Sha256::digest(serde_json::to_vec(policy).map_err(|_| "provider_policy_encoding_failed")?)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+    let evidence = serde_json::json!({"schema":1,"policy_sha256":digest,"external_baseline":external,"devices":devices});
+    let baseline = managed_baseline(policy, &live, &evidence)?;
+    let receipt = inspect_inner(policy, listen_port, Some(&evidence))?;
+    if crate::network_runtime::call(crate::network_runtime::Call::Status)? != status
+        || kernel.snapshot(policy)? != live
+    {
+        return Err("provider_legacy_evidence_changed".into());
+    }
+    Ok((receipt, baseline))
+}
+
 #[cfg(test)]
 mod managed_tests {
     use super::*;

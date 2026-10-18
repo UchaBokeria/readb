@@ -95,3 +95,20 @@ original setup/config stayed intact and healthy repeats made no manager changes.
 Actual systemd disposable sole-process freeze/stop passed separately. Actual host
 read-only original-plan admission passed without changing protected files/peers
 or creating upgrade intent. These are distinct from a live staging cutover.
+
+Empty-staging rollback source now preserves a separate image-bound progress
+stream and the original forward evidence. Old coordinator starts only after
+restored files, helper, original setup binding and durable marker release.
+A saved release/start acknowledgement can recover without stopping later work.
+Protected pinned candidate input covers interruptions before the new release
+was retained. General nonempty upgrade/rollback and live cutover remain open.
+
+Final native291 tests, full fmt/Clippy and scoped independent review pass.
+Immutable portablecc182b0d passed nine private namespace scenarios: clean;
+early forward interruption; partial user installer/helper start; lost stop,
+helper/final start and marker release replies; later real catalog work preserved.
+The saved-release recovery finding was reproduced and fixed. One fixture stop
+exceeded its simplified12s manager timeout; evidence was retained and the bounded
+owned-process kill path brought it in line with the real unit stop contract.
+Full Rust1.88/musl release workspace291 tests also pass. No live upgrade,
+device migration, VPN change or host reboot was performed by these checks.

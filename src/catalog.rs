@@ -164,6 +164,10 @@ fn create_binding(
     let _ = fs::remove_file(temp);
     result
 }
+pub(crate) fn existing_runtime_lock(root: &Path, config: &Path) -> Res<File> {
+    Store::new(root, config).bind_mode(false)?;
+    lock(root, "catalog-runtime.lock")
+}
 pub fn runtime_lock(root: &Path, config: &Path) -> Res<File> {
     Store::new(root, config).bind_mode(true)?;
     lock(root, "catalog-runtime.lock")

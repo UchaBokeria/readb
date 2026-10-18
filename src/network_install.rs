@@ -943,6 +943,24 @@ impl Installed {
 }
 /// Read an already installed root-owned immutable release by its exact digest.
 /// This does not adopt a receipt or prove a running process.
+/// Read-only alternative for a recorded upgrade whose new release has not yet
+/// been installed. Every path component and the complete bytes remain pinned.
+pub fn inspect_candidate(image_root: &Path, path: &Path, digest: &str) -> Res<Vec<u8>> {
+    if !valid_hash(digest) {
+        return Err("network_install_image_digest_invalid".into());
+    }
+    let relative = path
+        .strip_prefix("/")
+        .map_err(|_| "network_install_absolute_candidate_required")?;
+    let root = Root::open(image_root)?;
+    let bytes = root
+        .read(relative)?
+        .ok_or("network_install_candidate_missing")?;
+    if bytes.is_empty() || hash(&bytes) != digest || root.mode(relative)? != Some(0o700) {
+        return Err("network_install_candidate_changed_or_unsafe".into());
+    }
+    Ok(bytes)
+}
 pub fn inspect_release(image_root: &Path, digest: &str) -> Res<Vec<u8>> {
     if !valid_hash(digest) {
         return Err("network_install_image_digest_invalid".into());
