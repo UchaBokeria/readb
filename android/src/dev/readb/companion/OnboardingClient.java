@@ -55,7 +55,7 @@ final class OnboardingClient {
      }finally{Arrays.fill(payload,(byte)0);call=null;}
      try{
       JSONObject reply=new JSONObject(new String(response.body,StandardCharsets.UTF_8));
-      if(!(reply.get("schema") instanceof Number)||reply.getInt("schema")!=1)throw new IOException("invalid_response");
+      Object schema=reply.get("schema");if(!(schema instanceof Integer||schema instanceof Long)||((Number)schema).longValue()!=1)throw new IOException("invalid_response");
       String result=reply.getString("code");
       if(response.status==403)throw new IOException("invalid_setup");
       if(response.status==429||response.status==503){
@@ -78,7 +78,7 @@ final class OnboardingClient {
    }
   }catch(Exception failure){
    if(cancelled||Thread.currentThread().isInterrupted())return;
-   String reason=failure.getMessage(),message;
+   String reason=failure instanceof org.json.JSONException||failure instanceof IllegalArgumentException?"invalid_response":failure.getMessage(),message;
    if("invalid_code".equals(reason))message="Enter the 16-character setup code from Add device on your server.";
    else if("invalid_setup".equals(reason))message="The code or setup session is not valid. Check the code or create another on your server.";
    else if("invalid_server".equals(reason))message="Enter an HTTPS server address, without a path, password or query.";
