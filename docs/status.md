@@ -6,7 +6,8 @@ October18. Development build0.2.0. No stable release or device cutover.
 
 Blackwall has an active **empty staging server**, running77406f5 code. Existing
 interface/systemd setup passed twice without restarting either staged service.
-Web is off. Original WireGuard peers/config and legacy device services remain.
+The owner enabled its optional dashboard separately. Original WireGuard
+peers/config and legacy device services remain.
 PC device access still uses the canonical Blackwall Quest/Pixel routes.
 
 New controller-proxy source is not installed. Never replace a binary-bound setup
@@ -27,7 +28,11 @@ journal or remove legacy services to bypass an upgrade/acceptance gate.
   CLI follows the selected context; root maintenance remains explicitly local.
 - Upgrade maintenance barrier: exact upgrade/config marker, catalog/transport/
   state idle admission, cached backend guards, restart enforcement and local
-  prepare/resume CLI. Diagnosis stays available. Root upgrade adapter pending.
+  prepare/resume CLI. Diagnosis stays available.
+- Empty-staging software upgrade: original completed setup/image/provider binding,
+  journaled maintenance/stop/install/start/rebind/release, old-server frozen
+  bootstrap, exact interrupted-phase recovery and read-only original admission.
+  No device migration or VPN restart. General nonempty upgrade/rollback pending.
 - Android companion/JNI: encrypted profile/storage, embedded WireGuard, reporting,
   permission UI and Quest panel source. Development APK exists; migration pending.
 
@@ -50,7 +55,7 @@ headset connectivity, unattended first unlock or release readiness.
 
 ## Next gates
 
-1. Journaled managed upgrade, original setup binding and old empty-server bootstrap.
+1. Reviewed empty-staging live upgrade; general managed-device upgrade/rollback.
 2. Authenticated one-use encrypted old/new Android UID handover; preserve PIN/keys.
 3. Actual Quest and Pixel permission/VPN/report/port/UI/boot/cutover/rollback checks.
 4. Fresh-interface/dependency/init support, configured four-agent behavior smokes,
@@ -81,3 +86,12 @@ current snapshot, verifies the saved external state and rechecks evidence before
 return. Original strict inspection/receipt shape remain unchanged. The root
 transaction still must bind the original setup journal/provider and serialize
 maintenance/install/start/binding/release; no live upgrade is implied.
+
+Empty-staging upgrade source passes287host+287Rust1.88/musl workspace tests and
+full fmt/Clippy. A private Blackwall mount/network fixture ran real old/new
+coordinator/helper processes against a synthetic manager/kernel. Clean upgrade,
+lost freeze/stop/start replies and a catalog edit during freeze all passed;
+original setup/config stayed intact and healthy repeats made no manager changes.
+Actual systemd disposable sole-process freeze/stop passed separately. Actual host
+read-only original-plan admission passed without changing protected files/peers
+or creating upgrade intent. These are distinct from a live staging cutover.

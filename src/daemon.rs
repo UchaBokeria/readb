@@ -51,7 +51,12 @@ pub fn control_client(mut s: UnixStream, r: Arc<Registry>) {
         .and_then(|b| Request::parse(&b));
     match req {
         Ok(req) if req.action == "status" && req.device.is_empty() => reply(&mut s, &r.status(), 0),
-        Ok(req) if req.action == "maintenance-prepare" || req.action == "maintenance-resume" => {
+        Ok(req)
+            if matches!(
+                req.action.as_str(),
+                "maintenance-prepare" | "maintenance-resume" | "maintenance-resume-recover"
+            ) =>
+        {
             let result = (|| -> Res<serde_json::Value> {
                 if !req.device.is_empty()
                     || req.observe
@@ -67,7 +72,11 @@ pub fn control_client(mut s: UnixStream, r: Arc<Registry>) {
                 if req.action == "maintenance-prepare" {
                     r.prepare_maintenance(upgrade, config)
                 } else {
-                    let value = r.resume_maintenance(upgrade, config)?;
+                    let value = if req.action == "maintenance-resume-recover" {
+                        r.recover_maintenance_resume(upgrade, config)?
+                    } else {
+                        r.resume_maintenance(upgrade, config)?
+                    };
                     // Restore a saved dashboard only after admission reopens.
                     // A bind error is diagnostic; it must not undo release.
                     crate::web::restore(r.clone());

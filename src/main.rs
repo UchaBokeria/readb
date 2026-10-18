@@ -132,6 +132,42 @@ enum Cmd {
 }
 #[derive(Subcommand)]
 enum MaintenanceCmd {
+    #[command(hide = true)]
+    InspectEmpty {
+        #[arg(long)]
+        file: PathBuf,
+    },
+    #[command(hide = true)]
+    InspectMarker {
+        #[arg(long)]
+        config: String,
+    },
+    #[command(hide = true)]
+    ConfirmReleased {
+        #[arg(long)]
+        upgrade: String,
+        #[arg(long)]
+        config: String,
+    },
+    #[command(hide = true)]
+    BootstrapEmpty {
+        #[arg(long)]
+        file: PathBuf,
+        #[arg(long)]
+        upgrade: String,
+        #[arg(long)]
+        config: String,
+        #[arg(long)]
+        pid: u32,
+        #[arg(long)]
+        tick: String,
+        #[arg(long)]
+        binary: PathBuf,
+        #[arg(long)]
+        image: String,
+        #[arg(long)]
+        group: String,
+    },
     #[command(about = "Refuse busy jobs, persist a marker and close admission")]
     Prepare {
         #[arg(long)]
@@ -147,6 +183,11 @@ enum MaintenanceCmd {
         upgrade: String,
         #[arg(long)]
         config: String,
+        #[arg(
+            long,
+            help = "Confirm lost removal ack on the same still-closed daemon only"
+        )]
+        recover: bool,
     },
 }
 #[derive(Subcommand)]
@@ -180,6 +221,21 @@ enum NetworkCmd {
 }
 #[derive(Subcommand)]
 enum SetupCmd {
+    #[command(
+        about = "Upgrade only an exact empty staging server; preserve original proof and VPN"
+    )]
+    Upgrade {
+        #[command(flatten)]
+        options: SetupOptions,
+        #[arg(long)]
+        recover: bool,
+        #[arg(
+            long,
+            conflicts_with = "recover",
+            help = "Read-only original proof and running service admission"
+        )]
+        inspect: bool,
+    },
     #[command(
         about = "Inspect this server; print JSON plan and blockers, never change files or VPN"
     )]
@@ -282,6 +338,8 @@ enum DeviceCmd {
     Pair {
         #[arg(long,value_parser=clap::value_parser!(u16).range(1024..))]
         port: u16,
+        #[arg(long, help = "One-time VPN IP check; must match the saved device peer")]
+        ip: Option<std::net::Ipv4Addr>,
     },
     #[command(about = "Reconnect to the reported secure port, or review first identity")]
     Connect {
@@ -348,6 +406,10 @@ enum ActionCmd {
 }
 #[derive(Subcommand)]
 enum ServiceCmd {
+    #[command(hide = true)]
+    Freeze,
+    #[command(hide = true)]
+    Thaw,
     Install,
     Enable,
     Start,
@@ -461,11 +523,18 @@ fn run() -> Res<i32> {
             return Ok(0);
         }
         Cmd::Setup(cmd) => {
-            let (options, files, recover, provider, apply) = match cmd {
-                SetupCmd::Plan(options) => (options, false, false, false, false),
-                SetupCmd::Files { options, recover } => (options, true, *recover, false, false),
-                SetupCmd::Provider(options) => (options, false, false, true, false),
-                SetupCmd::Apply { options, recover } => (options, true, *recover, false, true),
+            let (options, files, recover, provider, apply, upgrade) = match cmd {
+                SetupCmd::Plan(options) => (options, false, false, false, false, false),
+                SetupCmd::Files { options, recover } => {
+                    (options, true, *recover, false, false, false)
+                }
+                SetupCmd::Provider(options) => (options, false, false, true, false, false),
+                SetupCmd::Apply { options, recover } => {
+                    (options, true, *recover, false, true, false)
+                }
+                SetupCmd::Upgrade {
+                    options, recover, ..
+                } => (options, true, *recover, false, false, true),
             };
             let SetupOptions {
                 endpoint,
@@ -553,6 +622,19 @@ fn run() -> Res<i32> {
                 let destination = install_dir
                     .clone()
                     .unwrap_or_else(|| owner.home.join(".local/lib/readb"));
+                if upgrade {
+                    let inspect = matches!(cmd, SetupCmd::Upgrade { inspect: true, .. });
+                    output(&readb::setup_upgrade_systemd::apply(
+                        plan.options.clone(),
+                        owner,
+                        policy,
+                        destination,
+                        &binary,
+                        recover,
+                        inspect,
+                    )?);
+                    return Ok(0);
+                }
                 let bound = readb::setup_apply::bind_with_install_dir(
                     plan.options.clone(),
                     owner,
@@ -679,6 +761,8 @@ fn run() -> Res<i32> {
                 ServiceCmd::Enable => "enable",
                 ServiceCmd::Start => "start",
                 ServiceCmd::Stop => "stop",
+                ServiceCmd::Freeze => "freeze",
+                ServiceCmd::Thaw => "thaw",
                 ServiceCmd::Restart => "restart",
                 ServiceCmd::Status => "status",
                 ServiceCmd::Uninstall => "uninstall",
@@ -701,6 +785,47 @@ fn run() -> Res<i32> {
         if c.device.is_some() || c.ticket.is_some() {
             return Err("maintenance_requires_server_scope".into());
         }
+        if let Cmd::Maintenance(sub) = &c.command {
+            let state = client::state_dir()?;
+            let value = match sub {
+                MaintenanceCmd::InspectEmpty { file } => {
+                    Some(readb::setup_upgrade_systemd::inspect_empty(&state, file)?)
+                }
+                MaintenanceCmd::InspectMarker { config } => {
+                    Some(json!({"maintenance":readb::maintenance::inspect(&state,config)?}))
+                }
+                MaintenanceCmd::ConfirmReleased { upgrade, config } => Some(
+                    readb::setup_upgrade_systemd::confirm_released(&state, upgrade, config)?,
+                ),
+                MaintenanceCmd::BootstrapEmpty {
+                    file,
+                    upgrade,
+                    config,
+                    pid,
+                    tick,
+                    binary,
+                    image,
+                    group,
+                } => Some(readb::setup_upgrade_systemd::bootstrap_empty(
+                    &state,
+                    file,
+                    &readb::setup_upgrade_systemd::Bootstrap {
+                        upgrade,
+                        config,
+                        pid: *pid,
+                        tick,
+                        binary,
+                        image,
+                        group,
+                    },
+                )?),
+                _ => None,
+            };
+            if let Some(value) = value {
+                output(&value);
+                return Ok(0);
+            }
+        }
     }
     let context = client::select(c.context.as_deref(), c.local)?;
     let mut req = client::request("status", c.device.as_deref());
@@ -714,9 +839,20 @@ fn run() -> Res<i32> {
                 MaintenanceCmd::Prepare { upgrade, config } => {
                     ("maintenance-prepare", upgrade, config)
                 }
-                MaintenanceCmd::Resume { upgrade, config } => {
-                    ("maintenance-resume", upgrade, config)
-                }
+                MaintenanceCmd::Resume {
+                    upgrade,
+                    config,
+                    recover,
+                } => (
+                    if *recover {
+                        "maintenance-resume-recover"
+                    } else {
+                        "maintenance-resume"
+                    },
+                    upgrade,
+                    config,
+                ),
+                _ => unreachable!("offline maintenance handled before RPC"),
             };
             readb::maintenance::Marker::new(upgrade, config)?;
             req.action = action.into();
@@ -786,10 +922,13 @@ fn run() -> Res<i32> {
             req.action = "trust".into();
             req.args = vec![fingerprint.clone()];
         }
-        Cmd::Device(DeviceCmd::Pair { port }) => {
+        Cmd::Device(DeviceCmd::Pair { port, ip }) => {
             required_device(&c)?;
             req.action = "exec".into();
             req.args = vec!["pair".into(), port.to_string()];
+            if let Some(ip) = ip {
+                req.args.push(ip.to_string());
+            }
             req.timeout = 30;
             let code = pairing_code()?;
             return client::call_with_input(&context, &req, true, Some(code)).map(|(code, _)| code);

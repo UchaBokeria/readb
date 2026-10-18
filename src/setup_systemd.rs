@@ -94,7 +94,7 @@ pub fn admit_user_manager(text: &str, uid: u32) -> Res<BTreeMap<String, String>>
     )?;
     Ok(m)
 }
-fn ctl(args: &[&str]) -> Res<String> {
+pub(crate) fn ctl(args: &[&str]) -> Res<String> {
     let bin = crate::network_runtime::program(&["/usr/bin/systemctl", "/bin/systemctl"])?;
     let mut c = std::process::Command::new(bin);
     c.env_clear()
@@ -108,7 +108,7 @@ fn ctl(args: &[&str]) -> Res<String> {
     }
     String::from_utf8(r.out).map_err(|_| "setup_service_manager_reply_invalid".into())
 }
-fn show(name: &str) -> Res<String> {
+pub(crate) fn show(name: &str) -> Res<String> {
     ctl(&[
         "show",
         "--all",
@@ -137,7 +137,7 @@ fn show(name: &str) -> Res<String> {
         "User",
     ])
 }
-fn quiet(m: &BTreeMap<String, String>, name: &str) -> bool {
+pub(crate) fn quiet(m: &BTreeMap<String, String>, name: &str) -> bool {
     if m.get("ActiveState").map(String::as_str) != Some("inactive")
         || m.get("MainPID").map(String::as_str) != Some("0")
         || m.get("Job").map(String::as_str) != Some("0")
@@ -183,7 +183,7 @@ pub fn admit_user_file_recovery(text: &str, fragment: &str) -> Res<()> {
     }
     Ok(())
 }
-fn start_tick(pid: u32) -> Res<String> {
+pub(crate) fn start_tick(pid: u32) -> Res<String> {
     let s =
         fs::read_to_string(format!("/proc/{pid}/stat")).map_err(|_| "setup_process_unavailable")?;
     s.rsplit_once(") ")
@@ -191,7 +191,7 @@ fn start_tick(pid: u32) -> Res<String> {
         .map(str::to_string)
         .ok_or("setup_process_stat_invalid".into())
 }
-fn process(pid: u32, uid: u32, binary: &Path, args: Option<&[String]>) -> Res<()> {
+pub(crate) fn process(pid: u32, uid: u32, binary: &Path, args: Option<&[String]>) -> Res<()> {
     if pid == 0 {
         return Err("setup_process_missing".into());
     }
@@ -237,12 +237,12 @@ fn process(pid: u32, uid: u32, binary: &Path, args: Option<&[String]>) -> Res<()
     }
     Ok(())
 }
-fn pid(m: &BTreeMap<String, String>) -> Res<u32> {
+pub(crate) fn pid(m: &BTreeMap<String, String>) -> Res<u32> {
     m.get("MainPID")
         .and_then(|s| s.parse().ok())
         .ok_or("setup_unit_pid_unavailable".into())
 }
-fn running(m: &BTreeMap<String, String>) -> bool {
+pub(crate) fn running(m: &BTreeMap<String, String>) -> bool {
     m.get("ActiveState").map(String::as_str) == Some("active")
         && m.get("SubState").map(String::as_str) == Some("running")
 }
@@ -578,5 +578,30 @@ pub fn apply(plan: &ApplyPlan, binary: &[u8], recover: bool) -> Res<Value> {
     }
     Ok(
         json!({"files_installed":true,"helper_active":true,"coordinator_active":true,"network_verified":true,"provider":provider,"devices_accepted":false,"plan_sha256":plan.plan_sha256,"next":"Enroll devices and verify each migration before retiring existing services. Web stays off by default."}),
+    )
+}
+
+pub(crate) fn verified_upgrade_binding(
+    plan: &ApplyPlan,
+    original: &[u8],
+    old: &str,
+    provider: &str,
+) -> Res<Vec<u8>> {
+    let user = crate::service::plan(&plan.owner.home, &plan.install_dir, true)?;
+    let mut adapter = Systemd { plan, user };
+    let mut observations = Vec::new();
+    for action in crate::setup_activation::ACTIONS {
+        let observed = adapter.inspect(action)?;
+        if !observed.ready {
+            return Err("upgrade_activation_not_verified".into());
+        }
+        observations.push((action, observed.fingerprint));
+    }
+    crate::setup_journal::verified_upgrade_binding(
+        original,
+        old,
+        &plan.plan_sha256,
+        provider,
+        observations,
     )
 }

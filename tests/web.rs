@@ -43,7 +43,7 @@ fn real_http_auth_controller_viewer_policy_and_shutdown() {
     fs::create_dir(&root).unwrap();
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
     let adb = root.join("adb");
-    fs::write(&adb, "#!/bin/sh\ncase \"$*\" in *ro.serialno*) echo fixture;; *) printf 'fixture output';; esac\n").unwrap();
+    fs::write(&adb, "#!/bin/sh\ncase \"$*\" in *keygen*) printf 'fixture private key' > \"$6\";; *pair*) read -r code; case \"$code\" in 000000) echo \"$code\"; exit 1;; 111111) sleep 10;; 222222) sleep 40;; *) echo \"$code\";; esac;; *ro.serialno*) echo fixture;; *) printf 'fixture output';; esac\n").unwrap();
     fs::set_permissions(&adb, fs::Permissions::from_mode(0o700)).unwrap();
     let c = ServerConfig::parse(&serde_json::to_vec(&json!({"schema":1,"adb":adb,"devices":[{"id":"phone","name":"Fixture phone","kind":"phone","peer":"192.0.2.3","adb_port":5037,"token":"x".repeat(64),"identity":<sha2::Sha256 as sha2::Digest>::digest(b"fixture").iter().map(|b| format!("{b:02x}")).collect::<String>()}]})).unwrap()).unwrap();
     let r = Arc::new(Registry::new(c, root.join("state")).unwrap());
@@ -66,7 +66,12 @@ fn real_http_auth_controller_viewer_policy_and_shutdown() {
     let key = fs::read_to_string(r.root.join("dashboard-key")).unwrap();
     let request = |method: &str, path: &str, auth: &str, origin: Option<&str>, body: Value| {
         let mut s = TcpStream::connect(addr).unwrap();
-        s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(if path == "/api/pair" {
+            40
+        } else {
+            5
+        })))
+        .unwrap();
         let body = if method == "POST" {
             body.to_string()
         } else {
@@ -96,6 +101,20 @@ fn real_http_auth_controller_viewer_policy_and_shutdown() {
     assert!(h.starts_with("HTTP/1.1 200"));
     assert!(!body.contains(&"x".repeat(64)));
     assert!(!body.contains(&"a".repeat(64)));
+    for payload in [
+        json!({"device":"phone","peer":"192.0.2.3","pair_port":40001,"code":"bad"}),
+        json!({"device":"phone","peer":"192.0.2.9","pair_port":40001,"code":"123456"}),
+    ] {
+        let (h, body) = request("POST", "/api/pair", &key, None, payload);
+        assert!(h.starts_with("HTTP/1.1 409"));
+        assert!(
+            body.contains("invalid_pair_request")
+                || body.contains("pair_ip_must_match_configured_peer"),
+            "{body}"
+        );
+        assert!(!body.contains("123456"));
+        assert!(b.status()["job"].is_null());
+    }
     let ticket = b
         .claim(
             Owner {
@@ -108,6 +127,16 @@ fn real_http_auth_controller_viewer_policy_and_shutdown() {
             90,
         )
         .unwrap();
+    let (h, body) = request(
+        "POST",
+        "/api/pair",
+        &key,
+        None,
+        json!({"device":"phone","peer":"192.0.2.3","pair_port":40001,"code":"123456"}),
+    );
+    assert!(h.starts_with("HTTP/1.1 409"));
+    assert!(body.contains("device_busy") && body.contains("UI review"));
+    assert!(!body.contains("123456"));
     let (h, body) = request(
         "POST",
         "/api/action",
@@ -130,6 +159,69 @@ fn real_http_auth_controller_viewer_policy_and_shutdown() {
     assert!(body.contains("fixture output"));
     assert!(b.status()["viewers"].as_array().unwrap().is_empty());
     b.release(&ticket).unwrap();
+    let (h, body) = request(
+        "POST",
+        "/api/pair",
+        &key,
+        None,
+        json!({"device":"phone","peer":"192.0.2.3","pair_port":40001,"code":"123456"}),
+    );
+    assert!(h.starts_with("HTTP/1.1 200"), "{h}: {body}");
+    assert!(body.contains("paired"));
+    assert!(
+        !body.contains("123456"),
+        "pair child echoes must never reach browser"
+    );
+    assert!(b.status()["job"].is_null());
+    let (h, body) = request(
+        "POST",
+        "/api/pair",
+        &key,
+        None,
+        json!({"device":"phone","peer":"192.0.2.3","pair_port":40001,"code":"000000"}),
+    );
+    assert!(h.starts_with("HTTP/1.1 409") && body.contains("pairing_failed"));
+    assert!(!body.contains("000000"));
+    let mut cancelled = TcpStream::connect(addr).unwrap();
+    let payload =
+        json!({"device":"phone","peer":"192.0.2.3","pair_port":40001,"code":"111111"}).to_string();
+    write!(cancelled, "POST /api/pair HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {key}\r\nContent-Length: {}\r\n\r\n{payload}", payload.len()).unwrap();
+    let until = std::time::Instant::now() + Duration::from_secs(3);
+    while b.status()["operation_running"] != true && std::time::Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(b.status()["operation_running"], true);
+    drop(cancelled);
+    while (!b.status()["job"].is_null() || b.status()["operation_running"] == true)
+        && std::time::Instant::now() < until
+    {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        b.status()["job"].is_null(),
+        "disconnected pairing must release its controller"
+    );
+    assert_eq!(b.status()["operation_running"], false);
+    let started = std::time::Instant::now();
+    let (h, body) = request(
+        "POST",
+        "/api/pair",
+        &key,
+        None,
+        json!({"device":"phone","peer":"192.0.2.3","pair_port":40001,"code":"222222"}),
+    );
+    assert!(
+        h.starts_with("HTTP/1.1 409") && body.contains("pairing_timed_out"),
+        "{h}: {body}"
+    );
+    assert!(started.elapsed() < Duration::from_secs(38));
+    assert!(!body.contains("222222"));
+    assert!(b.status()["cleanup_unknown"].is_null());
+    let (_, history) = request("GET", "/api/history", &key, None, Value::Null);
+    assert!(
+        !history.contains("123456"),
+        "pair code must not enter history"
+    );
     let (h, body) = request(
         "POST",
         "/api/policy",

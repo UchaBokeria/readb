@@ -79,6 +79,8 @@ async function api(path, options = {}) {
       if (!response.ok) throw new Error("Screenshot failed.");
       return { image: await response.blob() };
     }
+    if (!response.headers.get("content-type")?.includes("application/json"))
+      throw new Error("Dashboard service is unavailable. Try again shortly.");
     const data = await response.json();
     if (!response.ok || data.error)
       throw new Error(data.error || `Request failed (${response.status}).`);
@@ -136,6 +138,7 @@ async function refresh(initial = false) {
     if (
       !editing &&
       !$("#action-dialog").open &&
+      !$("#pair-dialog").open &&
       !state.busy &&
       modelKey() !== renderedModel
     )
@@ -201,7 +204,7 @@ function deviceDetails(d) {
       remaining: v.remaining_seconds,
     })),
   ].filter(Boolean);
-  return `<section class="detail" aria-label="${esc(d.name)} details"><div class="detail-head"><div><h2>${esc(d.name)}</h2><p>Shared views. One controller.</p></div><button data-page="actions" class="secondary">All actions</button></div><div class="detail-body"><div class="detail-section"><div class="section-label">Connection</div><div class="connection-path"><div class="connection-node"><strong>This view</strong><small>Dashboard</small></div><span class="connection-line"></span><div class="connection-node"><strong>Server</strong><small>Secure ADB</small></div><span class="connection-line"></span><div class="connection-node"><strong>${esc(d.name)}</strong><small>${d.connected ? "Verified" : "Unavailable"}</small></div></div><dl class="facts"><dt>Identity</dt><dd>${d.identity_verified ? "Verified" : "Not verified"}</dd><dt>Power</dt><dd>${awake}</dd><dt>Lockscreen</dt><dd>${m.unlocked === true && fresh ? "Unlocked" : "Not confirmed"}</dd><dt>Last report</dt><dd data-age="${esc(d.id)}">${age(d)}</dd><dt>Transport</dt><dd>ADB ${esc(d.adb_server_port)}</dd></dl><div class="quick-actions"><button data-action="wake">Wake</button><button data-action="screenshot">Screenshot</button><button data-action="home">Home</button><button data-action="logs">View logs</button></div>${d.cleanup_unknown ? `<div class="callout warning">Cleanup needs review. ${esc(d.cleanup_unknown)} New commands stay blocked.</div>` : ""}</div><div class="detail-section"><div class="section-label">While you work</div><div class="policy-row"><div><strong>Keep awake</strong><p>Keep the screen active during development.</p></div><button data-policy="enabled" class="toggle ${d.keepalive_policy.enabled ? "on" : ""}" role="switch" aria-checked="${d.keepalive_policy.enabled}" aria-label="Keep awake"></button></div><div class="policy-row"><div><strong>Prevent locking</strong><p>Request the supported keep-active behavior.</p></div><button data-policy="prevent_lock" class="toggle ${d.keepalive_policy.prevent_lock ? "on" : ""}" role="switch" aria-checked="${d.keepalive_policy.prevent_lock}" aria-label="Prevent locking"></button></div><div class="callout">A protected lockscreen can still need manual unlock. Awake does not mean unlocked.</div><div class="jobs-list"><div class="section-label">Current jobs <span class="muted">${jobs.length}</span></div>${jobs.length ? jobs.map((j) => `<div class="job-row"><div><strong>${esc(j.owner.job)}</strong><small>${esc(j.owner.agent)} on ${esc(j.owner.origin)}</small></div><span class="badge neutral">${j.mode}</span></div>`).join("") : "<p>No active jobs. Ready when you are.</p>"}</div></div></div></section>`;
+  return `<section class="detail" aria-label="${esc(d.name)} details"><div class="detail-head"><div><h2>${esc(d.name)}</h2><p>Shared views. One controller.</p></div><button data-page="actions" class="secondary">All actions</button></div><div class="detail-body"><div class="detail-section"><div class="section-label">Connection</div><div class="connection-path"><div class="connection-node"><strong>This view</strong><small>Dashboard</small></div><span class="connection-line"></span><div class="connection-node"><strong>Server</strong><small>Secure ADB</small></div><span class="connection-line"></span><div class="connection-node"><strong>${esc(d.name)}</strong><small>${d.connected ? "Verified" : "Unavailable"}</small></div></div><dl class="facts"><dt>Identity</dt><dd>${d.identity_verified ? "Verified" : "Not verified"}</dd><dt>Power</dt><dd>${awake}</dd><dt>Lockscreen</dt><dd>${m.unlocked === true && fresh ? "Unlocked" : "Not confirmed"}</dd><dt>Last report</dt><dd data-age="${esc(d.id)}">${age(d)}</dd><dt>Transport</dt><dd>ADB ${esc(d.adb_server_port)}</dd></dl><div class="quick-actions"><button id="open-pair">Pair device</button><button data-action="wake">Wake</button><button data-action="screenshot">Screenshot</button><button data-action="home">Home</button><button data-action="logs">View logs</button></div>${d.cleanup_unknown ? `<div class="callout warning">Cleanup needs review. ${esc(d.cleanup_unknown)} New commands stay blocked.</div>` : ""}</div><div class="detail-section"><div class="section-label">While you work</div><div class="policy-row"><div><strong>Keep awake</strong><p>Keep the screen active during development.</p></div><button data-policy="enabled" class="toggle ${d.keepalive_policy.enabled ? "on" : ""}" role="switch" aria-checked="${d.keepalive_policy.enabled}" aria-label="Keep awake"></button></div><div class="policy-row"><div><strong>Prevent locking</strong><p>Request the supported keep-active behavior.</p></div><button data-policy="prevent_lock" class="toggle ${d.keepalive_policy.prevent_lock ? "on" : ""}" role="switch" aria-checked="${d.keepalive_policy.prevent_lock}" aria-label="Prevent locking"></button></div><div class="callout">A protected lockscreen can still need manual unlock. Awake does not mean unlocked.</div><div class="jobs-list"><div class="section-label">Current jobs <span class="muted">${jobs.length}</span></div>${jobs.length ? jobs.map((j) => `<div class="job-row"><div><strong>${esc(j.owner.job)}</strong><small>${esc(j.owner.agent)} on ${esc(j.owner.origin)}</small></div><span class="badge neutral">${j.mode}</span></div>`).join("") : "<p>No active jobs. Ready when you are.</p>"}</div></div></div></section>`;
 }
 function renderDevices() {
   const visible = state.devices.filter((d) =>
@@ -219,7 +222,7 @@ function renderDevices() {
   if (!state.devices.length)
     return (
       head +
-      '<section class="empty"><h2>No devices yet.</h2><p>Enroll a device from the CLI. Pairing is not available in this development dashboard yet.</p><code>readb device --help</code></section>'
+      '<section class="empty"><h2>No devices yet.</h2><p>Enroll a device from the CLI, then select Pair device.</p><code>readb device --help</code></section>'
     );
   return (
     head +
@@ -265,7 +268,7 @@ function renderActivity() {
 function renderSettings() {
   return (
     title("Settings", "Clear defaults. Per-device control.") +
-    `<div class="settings-grid"><section class="settings-panel"><h2>Device behavior</h2><p>Keep awake and prevent locking are on by default. Change each device from its details page.</p><div class="callout">Actual power and lock state are reported separately. A requested setting is not a successful unlock.</div></section><section class="settings-panel"><h2>Dashboard access</h2><p>Web access is off by default. This session uses your server's access key.</p><dl class="facts"><dt>Server</dt><dd>${state.connected ? "Connected" : "Unavailable"}</dd><dt>Process</dt><dd>${state.pid || "Unknown"}</dd><dt>Device access</dt><dd>Through the server</dd></dl><button id="settings-signout" class="secondary">Disconnect dashboard</button></section><section class="settings-panel"><h2>Concurrent work</h2><p>View together. One controller changes a device. Different devices can work in parallel.</p><p>A busy device names its current job. Cancelled work with unknown cleanup stays blocked until reviewed.</p></section><section class="settings-panel"><h2>Server configuration</h2><p>Use the CLI to inspect your current configuration. Private keys and report credentials stay hidden.</p><div class="code-block">readb config show\nreadb service --help</div><p>Pairing and full configuration editing are still in development.</p></section></div>`
+    `<div class="settings-grid"><section class="settings-panel"><h2>Device behavior</h2><p>Keep awake and prevent locking are on by default. Change each device from its details page.</p><div class="callout">Actual power and lock state are reported separately. A requested setting is not a successful unlock.</div></section><section class="settings-panel"><h2>Dashboard access</h2><p>Web access is off by default. This session uses your server's access key.</p><dl class="facts"><dt>Server</dt><dd>${state.connected ? "Connected" : "Unavailable"}</dd><dt>Process</dt><dd>${state.pid || "Unknown"}</dd><dt>Device access</dt><dd>Through the server</dd></dl><button id="settings-signout" class="secondary">Disconnect dashboard</button></section><section class="settings-panel"><h2>Concurrent work</h2><p>View together. One controller changes a device. Different devices can work in parallel.</p><p>A busy device names its current job. Cancelled work with unknown cleanup stays blocked until reviewed.</p></section><section class="settings-panel"><h2>Server configuration</h2><p>Use the CLI to inspect your current configuration. Private keys and report credentials stay hidden.</p><div class="code-block">readb config show\nreadb service --help</div><p>Select a device to pair secure ADB. Full configuration editing is still in development.</p></section></div>`
   );
 }
 function render() {
@@ -383,6 +386,57 @@ async function policy(field) {
     await refresh();
   }
 }
+let pairAbort = null;
+async function openPair() {
+  const d = state.devices.find((d) => d.id === state.selected);
+  if (!d) return;
+  $("#pair-form").reset();
+  $("#pair-form").dataset.device = d.id;
+  $("#pair-result").textContent = "";
+  $("#submit-pair").disabled = true;
+  $("#pair-dialog").showModal();
+  try {
+    const config = await api("/api/config");
+    if (!$("#pair-dialog").open || $("#pair-form").dataset.device !== d.id) return;
+    $("#pair-peer").value = config.devices.find((item) => item.id === d.id)?.peer || "";
+    $("#submit-pair").disabled = false;
+    $("#pair-port").focus();
+  } catch (error) { $("#pair-result").textContent = error.message; }
+}
+function closePair() {
+  if (pairAbort) { pairAbort.abort(); return; }
+  $("#pair-code").value = "";
+  $("#pair-dialog").close();
+}
+$("#pair-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (pairAbort) return;
+  pairAbort = new AbortController();
+  const timer = setTimeout(() => pairAbort?.abort(), 40000);
+  const payload = { device: $("#pair-form").dataset.device, peer: $("#pair-peer").value.trim(), pair_port: Number($("#pair-port").value), code: $("#pair-code").value, connect_port: $("#pair-connect-port").value ? Number($("#pair-connect-port").value) : null };
+  $("#pair-code").value = "";
+  $("#submit-pair").disabled = true;
+  $("#submit-pair").textContent = "Pairing…";
+  $("#pair-result").textContent = "Checking exclusive device access. Pairing can take up to 30 seconds…";
+  let body = JSON.stringify(payload);
+  payload.code = "";
+  try {
+    const result = await api("/api/pair", { method: "POST", body, signal: pairAbort.signal });
+    $("#pair-result").textContent = result.message || "Paired. Review the first device fingerprint before device work.";
+  } catch (error) {
+    $("#pair-result").textContent = error.name === "AbortError" ? "Pairing stopped. Check device jobs for cleanup status before trying again." : error.message;
+  } finally {
+    body = "";
+    clearTimeout(timer);
+    pairAbort = null;
+    $("#submit-pair").disabled = false;
+    $("#submit-pair").textContent = "Pair device";
+    refresh();
+  }
+});
+$("#close-pair").addEventListener("click", closePair);
+$("#cancel-pair").addEventListener("click", closePair);
+$("#pair-dialog").addEventListener("cancel", (event) => { if (pairAbort) { event.preventDefault(); pairAbort.abort(); } else $("#pair-code").value = ""; });
 $("#login-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   state.key = $("#access-key").value.trim();
@@ -415,6 +469,7 @@ document.addEventListener("click", (e) => {
     policy(toggle.dataset.policy);
     return;
   }
+  if (e.target.id === "open-pair") openPair();
   if (e.target.id === "settings-signout") signout();
 });
 $("#main").addEventListener("input", (e) => {

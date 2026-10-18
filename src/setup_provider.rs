@@ -609,6 +609,26 @@ fn inspect_inner(
     Ok(receipt)
 }
 
+/// Authenticated external snapshot for software-only upgrade plan reconstruction.
+/// Retains the original recorded baseline while real managed peers exist.
+pub(crate) fn inspect_managed_baseline(
+    policy: &Policy,
+    listen_port: u16,
+) -> Res<(Receipt, Snapshot)> {
+    use crate::network::Kernel;
+    if unsafe { libc::geteuid() } != 0 {
+        return Err("provider_inspection_requires_root".into());
+    }
+    let evidence = crate::network_runtime::call(crate::network_runtime::Call::ProviderBaseline)?;
+    let mut kernel = crate::network_runtime::LinuxKernel::new()?;
+    let baseline = managed_baseline(policy, &kernel.snapshot(policy)?, &evidence)?;
+    let receipt = inspect_inner(policy, listen_port, Some(&evidence))?;
+    if crate::network_runtime::call(crate::network_runtime::Call::ProviderBaseline)? != evidence {
+        return Err("provider_managed_evidence_changed_during_inspection".into());
+    }
+    Ok((receipt, baseline))
+}
+
 #[cfg(test)]
 mod managed_tests {
     use super::*;

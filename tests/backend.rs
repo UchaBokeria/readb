@@ -368,7 +368,16 @@ fn pairing_is_controller_only_offline_and_fixed_peer_without_code_in_argv() {
         b.prepare(&t, vec!["pair".into(), "192.0.2.9:40001".into()])
             .is_err()
     );
-    let p = b.prepare(&t, vec!["pair".into(), "40001".into()]).unwrap();
+    assert!(
+        b.prepare(&t, vec!["pair".into(), "40001".into(), "192.0.2.9".into()])
+            .err()
+            .unwrap()
+            .contains("pair_ip_must_match_configured_peer")
+    );
+    assert!(!b.config.dir.join("adbkey").exists());
+    let p = b
+        .prepare(&t, vec!["pair".into(), "40001".into(), "192.0.2.5".into()])
+        .unwrap();
     let args = p
         .command
         .get_args()

@@ -54,6 +54,43 @@ fn fresh_repeat_upgrade_and_external_edit_are_safe() {
     fs::remove_dir_all(root).unwrap();
 }
 #[test]
+fn installed_contract_is_read_only_and_refuses_template_or_pending_drift() {
+    let root = image();
+    let policy = policy();
+    let plan = Plan::new(&policy, b"original image").unwrap();
+    let mut installer = Installer::open(&root).unwrap();
+    installer.install_policy(&policy).unwrap();
+    installer.install(plan.clone(), b"original image").unwrap();
+    // The live manager owns this lock. Discovery must not acquire it or write.
+    let before = fs::read(root.join("var/lib/readb-network/install.json")).unwrap();
+    let installed = inspect_installed(&root).unwrap();
+    assert_eq!(installed.binary(), b"original image");
+    assert_eq!(installed.plan().binary_path(), plan.binary_path());
+    assert_eq!(
+        inspect_release(&root, installed.image_sha256()).unwrap(),
+        b"original image"
+    );
+    assert!(inspect_release(&root, "../escape").is_err());
+    assert_eq!(
+        serde_json::to_vec(installed.policy()).unwrap(),
+        serde_json::to_vec(&policy).unwrap()
+    );
+    assert_eq!(
+        fs::read(root.join("var/lib/readb-network/install.json")).unwrap(),
+        before
+    );
+    let unit = root.join("etc/systemd/system/readb-network.service");
+    fs::write(&unit, b"different template").unwrap();
+    assert!(inspect_installed(&root).is_err());
+    fs::write(&unit, plan.unit()).unwrap();
+    installer
+        .prepare(Plan::new(&policy, b"next image").unwrap(), b"next image")
+        .unwrap();
+    assert!(inspect_installed(&root).is_err());
+    drop(installer);
+    fs::remove_dir_all(root).unwrap();
+}
+#[test]
 fn unknown_units_symlinks_parallel_installs_and_wrong_binary_are_denied() {
     let root = image();
     let p = Plan::new(&policy(), b"binary").unwrap();
@@ -327,5 +364,38 @@ fn read_only_inspection_coexists_with_state_lock_and_rejects_pending_or_edits() 
     assert!(inspect_setup_files(&root, &policy(), &p).is_err());
     assert_eq!(fs::read(unit).unwrap(), b"external edit");
     drop(installer);
+    fs::remove_dir_all(root).unwrap();
+}
+#[test]
+fn upgrade_file_recovery_admission_binds_exact_old_new_and_partial_artifacts() {
+    let root = image();
+    let policy = policy();
+    let old = Plan::new(&policy, b"old").unwrap();
+    let new = Plan::new(&policy, b"new").unwrap();
+    let mut i = Installer::open(&root).unwrap();
+    i.install_policy(&policy).unwrap();
+    i.install(old.clone(), b"old").unwrap();
+    drop(i);
+    assert!(matches!(
+        inspect_upgrade_state(&root, &policy, &old, &new).unwrap(),
+        UpgradeFiles::Old
+    ));
+    let mut i = Installer::open(&root).unwrap();
+    i.prepare(new.clone(), b"new").unwrap();
+    drop(i);
+    assert!(matches!(
+        inspect_upgrade_state(&root, &policy, &old, &new).unwrap(),
+        UpgradeFiles::Pending
+    ));
+    let wrong = Plan::new(&policy, b"unrelated").unwrap();
+    assert!(inspect_upgrade_state(&root, &policy, &old, &wrong).is_err());
+    let unit = root.join("etc/systemd/system/readb-network.service");
+    fs::write(&unit, b"external edit").unwrap();
+    assert!(inspect_upgrade_state(&root, &policy, &old, &new).is_err());
+    assert!(
+        root.join("var/lib/readb-network/install-pending.json")
+            .exists()
+    );
+    assert_eq!(fs::read(unit).unwrap(), b"external edit");
     fs::remove_dir_all(root).unwrap();
 }

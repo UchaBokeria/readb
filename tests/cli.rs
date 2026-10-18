@@ -186,3 +186,29 @@ fn maintenance_requires_explicit_server_scope_before_context_or_state_access() {
     assert!(!o.status.success());
     assert!(String::from_utf8_lossy(&o.stderr).contains("maintenance_requires_--local_on_server"));
 }
+
+#[test]
+fn one_time_pair_ip_is_typed_and_keeps_code_out_of_arguments() {
+    let help = Command::new(env!("CARGO_BIN_EXE_readb"))
+        .args(["device", "pair", "--help"])
+        .output()
+        .unwrap();
+    assert!(help.status.success());
+    assert!(String::from_utf8_lossy(&help.stdout).contains("--ip"));
+    let invalid = Command::new(env!("CARGO_BIN_EXE_readb"))
+        .args([
+            "--local",
+            "--device",
+            "fixture",
+            "device",
+            "pair",
+            "--port",
+            "40001",
+            "--ip",
+            "not-an-ip",
+        ])
+        .output()
+        .unwrap();
+    assert!(!invalid.status.success());
+    assert!(String::from_utf8_lossy(&invalid.stderr).contains("invalid IPv4 address"));
+}

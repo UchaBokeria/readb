@@ -67,6 +67,24 @@ fn hash(s: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 impl Progress {
+    pub(crate) fn verified(observations: Vec<(Action, String)>) -> Res<Self> {
+        let p = Self {
+            completed: observations
+                .into_iter()
+                .map(|(action, fingerprint)| Receipt {
+                    action,
+                    before: fingerprint.clone(),
+                    after: fingerprint,
+                })
+                .collect(),
+            pending: None,
+        };
+        p.validate()?;
+        if !p.complete() {
+            return Err("setup_verified_activation_incomplete".into());
+        }
+        Ok(p)
+    }
     pub(crate) fn complete(&self) -> bool {
         self.completed.len() == ACTIONS.len() && self.pending.is_none()
     }

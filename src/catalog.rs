@@ -165,7 +165,7 @@ fn create_binding(
     result
 }
 pub fn runtime_lock(root: &Path, config: &Path) -> Res<File> {
-    Store::new(root, config).bind()?;
+    Store::new(root, config).bind_mode(true)?;
     lock(root, "catalog-runtime.lock")
 }
 impl Store {
@@ -198,7 +198,7 @@ impl Store {
         *store.baseline.lock().unwrap() = Ok(raw.as_deref().map(hash));
         Ok(store)
     }
-    fn bind(&self) -> Res<()> {
+    fn bind_mode(&self, create: bool) -> Res<()> {
         use std::io::Write;
         if !self.root.is_absolute()
             || !self.config.is_absolute()
@@ -242,6 +242,9 @@ impl Store {
             return Err("catalog_binding_too_large".into());
         }
         if read(&name, 4096)?.is_none() {
+            if !create {
+                return Err("catalog_existing_binding_required: original coordinator must establish ownership first".into());
+            }
             match create_binding(&name, &bytes, |f, b| {
                 f.write_all(b)
                     .map_err(|_| "catalog_binding_stage_failed".into())
@@ -285,6 +288,12 @@ impl Store {
             || !matches!(fs::symlink_metadata(self.root.join("catalog-pending.json")),Err(e) if e.kind()==std::io::ErrorKind::NotFound)
     }
     pub fn preflight(&self) -> Res<()> {
+        self.preflight_mode(true)
+    }
+    pub(crate) fn preflight_existing(&self) -> Res<()> {
+        self.preflight_mode(false)
+    }
+    fn preflight_mode(&self, create: bool) -> Res<()> {
         if !self.root.is_absolute()
             || !self.config.is_absolute()
             || self
@@ -321,7 +330,7 @@ impl Store {
         {
             return Err("catalog_parent_not_writable".into());
         }
-        self.bind()?;
+        self.bind_mode(create)?;
         self.check_baseline()?;
         Ok(())
     }

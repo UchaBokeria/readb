@@ -653,6 +653,9 @@ impl Installer {
         self.root.sync(Path::new(POLICY_FILE))?;
         self.root.sync(Path::new(UNIT))?;
         self.root.sync(Path::new(&plan.binary_path()[1..]))?;
+        self.root.sync(Path::new(&format!("{STATE}/{RECEIPT}")))?;
+        self.root
+            .sync(Path::new(&format!("{STATE}/{POLICY_RECEIPT}")))?;
         Ok(())
     }
     fn verify_release(&self, r: &Receipt) -> Res<()> {
@@ -917,6 +920,93 @@ pub fn inspect_setup_files(image_root: &Path, policy: &Policy, plan: &Plan) -> R
     }
     verify_file_contents(&root, &state, policy, plan)
 }
+/// An exact installed image, not authority to stop or replace its running service.
+/// Discovery is read-only and does not contend with the live helper state lock.
+pub struct Installed {
+    policy: Policy,
+    plan: Plan,
+    binary: Vec<u8>,
+}
+impl Installed {
+    pub fn image_sha256(&self) -> &str {
+        &self.plan.binary_sha
+    }
+    pub fn policy(&self) -> &Policy {
+        &self.policy
+    }
+    pub fn plan(&self) -> &Plan {
+        &self.plan
+    }
+    pub fn binary(&self) -> &[u8] {
+        &self.binary
+    }
+}
+/// Read an already installed root-owned immutable release by its exact digest.
+/// This does not adopt a receipt or prove a running process.
+pub fn inspect_release(image_root: &Path, digest: &str) -> Res<Vec<u8>> {
+    if !valid_hash(digest) {
+        return Err("network_install_image_digest_invalid".into());
+    }
+    let root = Root::open(image_root)?;
+    let path = format!("usr/local/lib/readb-network/releases/{digest}/readb");
+    let bytes = root
+        .read(Path::new(&path))?
+        .ok_or("network_install_release_missing")?;
+    if bytes.is_empty() || hash(&bytes) != digest || root.mode(Path::new(&path))? != Some(0o700) {
+        return Err("network_install_previous_release_changed".into());
+    }
+    Ok(bytes)
+}
+pub fn inspect_installed(image_root: &Path) -> Res<Installed> {
+    let root = Root::open(image_root)?;
+    let state = root
+        .directory(Path::new(STATE), false)?
+        .ok_or("network_install_state_unavailable")?;
+    if state
+        .metadata()
+        .map_err(|_| "network_install_state_unavailable")?
+        .mode()
+        & 0o077
+        != 0
+    {
+        return Err("network_install_private_state_required".into());
+    }
+    no_file_intent(&state)?;
+    let policy_bytes = root
+        .read(Path::new(POLICY_FILE))?
+        .ok_or("network_policy_missing")?;
+    let policy: Policy =
+        serde_json::from_slice(&policy_bytes).map_err(|_| "network_policy_invalid")?;
+    policy.validate()?;
+    let receipt_bytes =
+        read_at(&state, RECEIPT.as_ref())?.ok_or("network_install_receipt_missing")?;
+    let receipt: Receipt =
+        serde_json::from_slice(&receipt_bytes).map_err(|_| "network_install_receipt_invalid")?;
+    receipt.validate()?;
+    let plan = Plan {
+        schema: 1,
+        policy: policy.clone(),
+        binary_sha: receipt.binary_sha,
+    };
+    // Reconstruct the supported unit contract. Unknown historical templates
+    // require an explicit adapter; never infer ownership from a unit description.
+    verify_file_contents(&root, &state, &policy, &plan)?;
+    let binary = root
+        .read(Path::new(&plan.binary_path()[1..]))?
+        .ok_or("network_install_previous_release_changed")?;
+    if Plan::new(&policy, &binary)?.binary_path() != plan.binary_path()
+        || read_at(&state, RECEIPT.as_ref())?.as_ref() != Some(&receipt_bytes)
+        || root.read(Path::new(POLICY_FILE))?.as_ref() != Some(&policy_bytes)
+    {
+        return Err("network_install_changed_during_inspection".into());
+    }
+    verify_file_contents(&root, &state, &policy, &plan)?;
+    Ok(Installed {
+        policy,
+        plan,
+        binary,
+    })
+}
 fn no_file_intent(state: &File) -> Res<()> {
     for name in [INTENT, POLICY_INTENT] {
         if read_at(state, name.as_ref())?.is_some() {
@@ -965,6 +1055,72 @@ fn verify_file_contents(root: &Root, state: &File, policy: &Policy, plan: &Plan)
     }
     verify_release_contents(root, &expected)?;
     no_file_intent(state)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum UpgradeFiles {
+    Old,
+    Pending,
+    New,
+}
+/// Call only after the admitted helper is quiet. A matching pending intent
+/// permits exact recovery; it never grants arbitrary mark-complete authority.
+pub fn inspect_upgrade_state(
+    image_root: &Path,
+    policy: &Policy,
+    old: &Plan,
+    new: &Plan,
+) -> Res<UpgradeFiles> {
+    old.validate()?;
+    new.validate()?;
+    if serde_json::to_vec(&old.policy).map_err(|_| "upgrade_policy_invalid")?
+        != serde_json::to_vec(policy).map_err(|_| "upgrade_policy_invalid")?
+        || serde_json::to_vec(&new.policy).map_err(|_| "upgrade_policy_invalid")?
+            != serde_json::to_vec(policy).map_err(|_| "upgrade_policy_invalid")?
+    {
+        return Err("upgrade_policy_changed".into());
+    }
+    let i = Installer::open(image_root)?;
+    if i.pending_policy.is_some() {
+        return Err("upgrade_unrelated_policy_intent_preserved".into());
+    }
+    if let Some(p) = &i.pending {
+        let before = old.receipt()?;
+        let after = new.receipt()?;
+        if serde_json::to_vec(&p.plan).map_err(|_| "upgrade_plan_invalid")?
+            != serde_json::to_vec(new).map_err(|_| "upgrade_plan_invalid")?
+            || p.before.as_ref() != Some(&before)
+            || p.before_unit.as_deref() != Some(old.unit().as_bytes())
+        {
+            return Err("upgrade_unrelated_install_intent_preserved".into());
+        }
+        i.verify_release(&before)?;
+        let current = i.receipt()?;
+        let unit = i.root.read(Path::new(UNIT))?;
+        if (current.as_ref() != Some(&before) && current.as_ref() != Some(&after))
+            || (unit.as_deref() != Some(old.unit().as_bytes())
+                && unit.as_deref() != Some(new.unit().as_bytes()))
+            || i.root.read(Path::new(POLICY_FILE))?.as_ref()
+                != Some(&serde_json::to_vec(policy).map_err(|_| "upgrade_policy_invalid")?)
+            || i.root.mode(Path::new(POLICY_FILE))? != Some(0o600)
+            || i.root.mode(Path::new(UNIT))? != Some(0o600)
+        {
+            return Err("upgrade_pending_files_changed".into());
+        }
+        let path = new.binary_path();
+        let path = Path::new(&path[1..]);
+        if let Some(bytes) = i.root.read(path)?
+            && (hash(&bytes) != new.binary_sha || i.root.mode(path)? != Some(0o700))
+        {
+            return Err("upgrade_pending_image_changed".into());
+        }
+        return Ok(UpgradeFiles::Pending);
+    }
+    if verify_file_contents(&i.root, &i.state, policy, new).is_ok() {
+        return Ok(UpgradeFiles::New);
+    }
+    verify_file_contents(&i.root, &i.state, policy, old)?;
+    Ok(UpgradeFiles::Old)
 }
 
 #[cfg(test)]

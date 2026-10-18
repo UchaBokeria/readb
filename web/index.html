@@ -109,6 +109,19 @@
         </footer>
       </form>
     </dialog>
+    <dialog id="pair-dialog">
+      <form id="pair-form" autocomplete="off">
+        <header><div><small>Secure ADB</small><h2>Pair device</h2></div><button type="button" class="icon-button" id="close-pair" aria-label="Close pairing">×</button></header>
+        <p id="pair-description">Open Wireless debugging → Pair device with pairing code. Enter these details once. The companion reports later connection port changes.</p>
+        <label for="pair-peer">Enrolled VPN IP</label><input id="pair-peer" required inputmode="decimal" placeholder="10.99.0.100" />
+        <label for="pair-port">Pairing port</label><input id="pair-port" required type="number" min="1024" max="65535" placeholder="Shown next to pairing code" />
+        <label for="pair-code">Six-digit pairing code</label><input id="pair-code" required type="password" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="off" />
+        <label for="pair-connect-port">Connection port (optional)</label><input id="pair-connect-port" type="number" min="1024" max="65535" placeholder="Different from the pairing port" />
+        <div class="callout">Use the VPN IP saved for this device. Pairing does not automatically trust a new device fingerprint. Codes are sent once and are never saved.</div>
+        <div id="pair-result" class="action-result" aria-live="polite"></div>
+        <footer><button type="button" class="secondary" id="cancel-pair">Cancel</button><button type="submit" class="primary" id="submit-pair">Pair device</button></footer>
+      </form>
+    </dialog>
     <div id="toast" role="status" class="toast" hidden></div>
   </body>
 </html>

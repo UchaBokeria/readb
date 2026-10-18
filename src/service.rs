@@ -41,11 +41,22 @@ fn safe_path(p: &Path) -> bool {
             .any(|c| *c < 32 || b"%\"\\".contains(c))
 }
 pub fn plan(home: &Path, prefix: &Path, server: bool) -> Res<InstallPlan> {
+    plan_for_binary(home, prefix, server, &executing_bytes()?)
+}
+pub(crate) fn plan_for_binary(
+    home: &Path,
+    prefix: &Path,
+    server: bool,
+    image: &[u8],
+) -> Res<InstallPlan> {
     if !safe_path(home) || !safe_path(prefix) {
         return Err("absolute_safe_install_paths_required".into());
     }
     use sha2::Digest;
-    let digest = sha2::Sha256::digest(executing_bytes()?);
+    if image.is_empty() || image.len() > 64 * 1024 * 1024 {
+        return Err("install_image_size_invalid".into());
+    }
+    let digest = sha2::Sha256::digest(image);
     let digest = digest
         .iter()
         .map(|b| format!("{b:02x}"))
@@ -383,6 +394,8 @@ pub fn manage(action: &str) -> Res<Value> {
         "enable" => systemctl(&["enable", "readb.service"]),
         "start" => systemctl(&["enable", "--now", "readb.service"]),
         "stop" => systemctl(&["stop", "readb.service"]),
+        "freeze" => systemctl(&["freeze", "readb.service"]),
+        "thaw" => systemctl(&["thaw", "readb.service"]),
         "restart" => systemctl(&["restart", "readb.service"]),
         "status" => {
             let o = manager_output(
@@ -410,6 +423,8 @@ pub fn manage(action: &str) -> Res<Value> {
                     "ActiveState",
                     "-p",
                     "SubState",
+                    "-p",
+                    "FreezerState",
                     "-p",
                     "MainPID",
                     "-p",

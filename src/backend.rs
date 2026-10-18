@@ -1020,12 +1020,19 @@ impl Backend {
             s.gate.authorize(t, lease_now())?;
         }
         let pairing = args.first().is_some_and(|a| a == "pair");
-        if pairing
-            && (observer || args.len() != 2 || !args[1].parse::<u16>().is_ok_and(|p| p >= 1024))
-        {
-            return Err("pair_requires_controller_and_port_only".into());
-        }
         if pairing {
+            if observer
+                || !(2..=3).contains(&args.len())
+                || !args[1].parse::<u16>().is_ok_and(|p| p >= 1024)
+            {
+                return Err("pair_requires_controller_and_port_only".into());
+            }
+            if args
+                .get(2)
+                .is_some_and(|ip| ip.parse::<std::net::Ipv4Addr>().ok() != Some(self.config.peer))
+            {
+                return Err("pair_ip_must_match_configured_peer: use the enrolled VPN IP".into());
+            }
             self.ensure_pairing_key()?;
         }
         let allowed = [
@@ -1066,7 +1073,10 @@ impl Backend {
         if !pairing {
             validate_remote(&args)?;
         }
-        let pure = is_pure(&args);
+        // Pairing changes TLS authorization, but starts no device-side command.
+        // A failed/expired code is safe to retry after local child cleanup. Keep
+        // controller admission above; this flag only governs cancellation fences.
+        let pure = pairing || is_pure(&args);
         if observer {
             let v = s.viewers.get_mut(t).unwrap();
             if v.active {

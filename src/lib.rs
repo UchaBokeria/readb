@@ -64,3 +64,7 @@ pub mod network_controller;
 pub mod network_authority;
 
 pub mod maintenance;
+
+pub mod setup_upgrade;
+
+pub mod setup_upgrade_systemd;

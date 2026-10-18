@@ -214,6 +214,17 @@ impl Store {
     pub fn remove(&mut self, expected: &Marker) -> Res<()> {
         self.remove_sync(expected, File::sync_all)
     }
+    /// Confirm a previously attempted removal only. The caller must retain the
+    /// exact cached maintenance owner and verify quiescence before reopening.
+    pub(crate) fn confirm_removed(&mut self, expected: &Marker) -> Res<()> {
+        expected.validate()?;
+        if self.load(&expected.config)?.is_some() {
+            return Err("maintenance_recovery_requires_missing_marker".into());
+        }
+        self.dir
+            .sync_all()
+            .map_err(|_| "maintenance_resume_unconfirmed".into())
+    }
     fn remove_sync(
         &mut self,
         expected: &Marker,

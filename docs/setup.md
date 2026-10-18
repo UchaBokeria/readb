@@ -159,5 +159,28 @@ writes stay blocked; `doctor` stays available. Never cancel another job to upgra
 processes, provider and setup binding are verified and the root transaction has
 saved its final release intent. It cannot undo shutdown. An unconfirmed resume
 requires upgrade-journal diagnosis; marker absence alone does not prove success.
-The root upgrade adapter and old-server bootstrap remain unfinished. Do not
-replace or discard a completed setup journal to change its binary binding.
+`maintenance resume --recover` confirms a lost removal acknowledgement only on
+the same still-closed daemon with the exact cached owner. A fresh/open daemon
+cannot use it to invent ownership. Root final-release recovery is separate.
+
+## Empty-staging software upgrade
+
+Use the candidate binary and the **same setup flags** as the original install:
+
+```sh
+readb --local setup upgrade --help
+# Add the original endpoint, interface, user, range and install destination.
+readb --local setup upgrade [original setup flags] --inspect
+readb --local setup upgrade [original setup flags]
+```
+
+`--inspect` verifies the original completed journal, exact files/processes and
+provider without creating upgrade intent. After an interrupted action, rerun the
+exact candidate/flags with `--recover`. Do not discard or replace its evidence.
+
+Only an empty server is supported here. A new daemon uses its maintenance RPC;
+the older server needs an exact sole frozen process and an existing empty catalog
+binding before offline marker publication. Busy, unknown, edited or nonempty
+state refuses. New files/services and activation receipts are verified before
+the new setup binding and final release. Old images/journal bytes stay retained.
+No host reboot, VPN restart, device cutover or general rollback is performed.

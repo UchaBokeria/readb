@@ -48,6 +48,48 @@ fn maintenance_requires_no_leases_and_blocks_cached_backends_until_exact_resume(
     fs::remove_dir_all(&r.root).unwrap();
 }
 #[test]
+fn lost_unlink_ack_requires_exact_cached_owner_and_explicit_recovery() {
+    let r = registry();
+    let b = r.device("phone").unwrap();
+    let config = r.config_fingerprint().unwrap();
+    let tag = "a".repeat(64);
+    r.prepare_maintenance(&tag, &config).unwrap();
+    fs::remove_file(r.root.join("upgrade-maintenance.json")).unwrap();
+    assert!(r.resume_maintenance(&tag, &config).is_err());
+    assert!(b.claim(owner(), 90).is_err());
+    assert!(
+        r.recover_maintenance_resume(&"c".repeat(64), &config)
+            .is_err()
+    );
+    r.recover_maintenance_resume(&tag, &config).unwrap();
+    let ticket = b.claim(owner(), 90).unwrap();
+    b.release(&ticket).unwrap();
+    // This command cannot authorize an unrelated or already-open daemon.
+    assert!(r.recover_maintenance_resume(&tag, &config).is_err());
+    fs::remove_dir_all(&r.root).unwrap();
+}
+#[test]
+fn resume_recovery_preserves_other_markers_and_changed_config() {
+    let r = registry();
+    let config = r.config_fingerprint().unwrap();
+    let tag = "a".repeat(64);
+    r.prepare_maintenance(&tag, &config).unwrap();
+    let path = r.root.join("upgrade-maintenance.json");
+    fs::remove_file(&path).unwrap();
+    let other = readb::maintenance::Marker::new(&"c".repeat(64), &config).unwrap();
+    readb::maintenance::Store::open(&r.root)
+        .unwrap()
+        .publish(&other)
+        .unwrap();
+    assert!(r.recover_maintenance_resume(&tag, &config).is_err());
+    assert!(readb::maintenance::inspect(&r.root, &config).unwrap() == Some(other));
+    fs::remove_file(path).unwrap();
+    fs::write(&r.config_path, b"changed externally").unwrap();
+    assert!(r.recover_maintenance_resume(&tag, &config).is_err());
+    assert!(r.device("phone").unwrap().claim(owner(), 90).is_err());
+    fs::remove_dir_all(&r.root).unwrap();
+}
+#[test]
 fn marker_refresh_covers_startup_and_constructor_before_runtime_lock_race() {
     let r = registry();
     let b = r.device("phone").unwrap();
@@ -182,6 +224,41 @@ fn maintenance_rpc_requires_exact_server_scope_and_keeps_diagnosis_available() {
         rpc(
             r.clone(),
             json!({"action":"maintenance-resume","args":[tag,config]})
+        )
+        .0,
+        0
+    );
+    assert!(r.status()["maintenance"].is_null());
+    fs::remove_dir_all(&r.root).unwrap();
+}
+#[test]
+fn explicit_resume_recovery_rpc_does_not_invent_a_missing_owner() {
+    use serde_json::json;
+    let r = Arc::new(registry());
+    let config = r.config_fingerprint().unwrap();
+    let tag = "a".repeat(64);
+    assert_ne!(
+        rpc(
+            r.clone(),
+            json!({"action":"maintenance-resume-recover","args":[tag,config]})
+        )
+        .0,
+        0
+    );
+    r.prepare_maintenance(&tag, &config).unwrap();
+    fs::remove_file(r.root.join("upgrade-maintenance.json")).unwrap();
+    assert_ne!(
+        rpc(
+            r.clone(),
+            json!({"action":"maintenance-resume-recover","args":[tag,config],"observe":true})
+        )
+        .0,
+        0
+    );
+    assert_eq!(
+        rpc(
+            r.clone(),
+            json!({"action":"maintenance-resume-recover","args":[tag,config]})
         )
         .0,
         0

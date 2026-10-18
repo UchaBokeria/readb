@@ -212,6 +212,14 @@ impl Registry {
         Ok(())
     }
     pub fn resume_maintenance(&self, upgrade: &str, config: &str) -> Res<Value> {
+        self.resume_maintenance_inner(upgrade, config, false)
+    }
+    /// Reconcile a lost removal acknowledgement on this still-closed process.
+    /// Absence alone never authorizes reopening a different/fresh daemon.
+    pub fn recover_maintenance_resume(&self, upgrade: &str, config: &str) -> Res<Value> {
+        self.resume_maintenance_inner(upgrade, config, true)
+    }
+    fn resume_maintenance_inner(&self, upgrade: &str, config: &str, recover: bool) -> Res<Value> {
         let expected = crate::maintenance::Marker::new(upgrade, config)?;
         let catalog = self.catalog.lock().unwrap();
         if self
@@ -243,7 +251,12 @@ impl Registry {
         for (backend, state) in backends.iter().zip(states.iter_mut()) {
             backend.maintenance_quiet(state)?;
         }
-        crate::maintenance::Store::open(&self.root)?.remove(&expected)?;
+        let mut store = crate::maintenance::Store::open(&self.root)?;
+        if recover {
+            store.confirm_removed(&expected)?;
+        } else {
+            store.remove(&expected)?;
+        }
         *self.maintenance.lock().unwrap() = None;
         for state in &mut states {
             state.maintenance = false;

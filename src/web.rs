@@ -220,6 +220,16 @@ struct ActionRequest {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct PairRequest {
+    device: String,
+    peer: std::net::Ipv4Addr,
+    pair_port: u16,
+    code: String,
+    #[serde(default)]
+    connect_port: Option<u16>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct PolicyRequest {
     device: String,
     enabled: bool,
@@ -250,15 +260,29 @@ fn collect(
     ticket: &str,
     args: Vec<String>,
 ) -> Res<(i32, Vec<u8>, Vec<u8>)> {
+    collect_input(b, ticket, args, None, 300)
+}
+fn collect_input(
+    b: Arc<crate::backend::Backend>,
+    ticket: &str,
+    args: Vec<String>,
+    input: Option<Vec<u8>>,
+    timeout: u64,
+) -> Res<(i32, Vec<u8>, Vec<u8>)> {
     let mut req = client::request("exec", None);
     req.ticket = ticket.into();
     req.args = args;
-    req.timeout = 300;
+    req.timeout = timeout;
     let req = control::Request::parse(&serde_json::to_vec(&req).unwrap())?;
     let (mut c, s) = UnixStream::pair().map_err(|_| "action_channel_failed")?;
-    c.set_read_timeout(Some(Duration::from_secs(340)))
+    c.set_read_timeout(Some(Duration::from_secs(timeout + 10)))
         .map_err(|_| "action_channel_failed")?;
     thread::spawn(move || control::handle_request(s, b, req));
+    if let Some(mut bytes) = input {
+        let result = frame(&mut c, 0, &bytes);
+        bytes.fill(0);
+        result.map_err(|_| "action_channel_closed")?;
+    }
     frame(&mut c, 4, b"").map_err(|_| "action_channel_closed")?;
     let (mut out, mut err) = (Vec::new(), Vec::new());
     loop {
@@ -281,6 +305,98 @@ fn collect(
             _ => return Err("invalid_action_frame".into()),
         }
     }
+}
+fn pair(s: &mut TcpStream, r: Arc<Registry>, p: PairRequest, stopped: Arc<AtomicBool>) -> Res<()> {
+    if p.pair_port < 1024
+        || p.connect_port.is_some_and(|port| port < 1024)
+        || p.code.len() != 6
+        || !p.code.bytes().all(|b| b.is_ascii_digit())
+    {
+        return Err(
+            "invalid_pair_request: use the six-digit code and pairing port shown on the device"
+                .into(),
+        );
+    }
+    let b = r.device(&p.device)?;
+    if p.peer != b.config.peer {
+        return Err("pair_ip_must_match_configured_peer: use the enrolled VPN IP".into());
+    }
+    if stopped.load(Ordering::SeqCst) {
+        return Err("dashboard_disabled".into());
+    }
+    let ticket = b.claim(
+        Owner {
+            agent: "web".into(),
+            origin: "dashboard".into(),
+            session: random(),
+            job: "Pair secure ADB".into(),
+            allow_sleep: false,
+        },
+        90,
+    )?;
+    let monitor = match s.try_clone() {
+        Ok(value) => value,
+        Err(_) => {
+            b.release(&ticket)?;
+            return Err("dashboard_monitor_failed".into());
+        }
+    };
+    let done = Arc::new(AtomicBool::new(false));
+    let finished = done.clone();
+    let bb = b.clone();
+    let t = ticket.clone();
+    thread::spawn(move || {
+        let mut poll = libc::pollfd {
+            fd: monitor.as_raw_fd(),
+            events: libc::POLLRDHUP,
+            revents: 0,
+        };
+        while !finished.load(Ordering::SeqCst) {
+            let rc = unsafe { libc::poll(&mut poll, 1, 100) };
+            if stopped.load(Ordering::SeqCst)
+                || (rc > 0 && poll.revents & (libc::POLLRDHUP | libc::POLLHUP | libc::POLLERR) != 0)
+            {
+                let _ = bb.cancel(&t);
+                break;
+            }
+        }
+    });
+    let mut bytes = p.code.into_bytes();
+    bytes.push(b'\n');
+    let result = (|| -> Res<Value> {
+        // Pair output is deliberately discarded: implementations can echo input.
+        let (code, _, _) = collect_input(
+            b.clone(),
+            &ticket,
+            vec!["pair".into(), p.pair_port.to_string(), p.peer.to_string()],
+            Some(bytes),
+            30,
+        )?;
+        if code != 0 {
+            return Err(if code == 124 { "pairing_timed_out: open a fresh pairing code and try again" } else if code == 130 { "pairing_cancelled: check device jobs for cleanup status" } else { "pairing_failed: code may be expired, wrong, or the VPN peer unavailable; open a fresh pairing code" }.into());
+        }
+        if let Some(port) = p.connect_port {
+            // Never auto-trust a new fingerprint. Return the existing review flow.
+            let connection = b.connect_device(&ticket, Some(port));
+            return Ok(match connection {
+                Ok(value) => {
+                    json!({"paired":true,"connection":value,"message":"Paired. Check identity status before device work."})
+                }
+                Err(_) => {
+                    json!({"paired":true,"message":"Paired. Connection still needs review; inspect the device identity and connection port."})
+                }
+            });
+        }
+        Ok(
+            json!({"paired":true,"message":"Paired. The companion reports new connection ports automatically. Review the first device fingerprint before device work."}),
+        )
+    })();
+    done.store(true, Ordering::SeqCst);
+    let release = b.release(&ticket);
+    let value = result?;
+    release?;
+    json_reply(s, 200, &value);
+    Ok(())
 }
 fn action(
     s: &mut TcpStream,
@@ -422,6 +538,11 @@ fn handle(
                 json_reply(&mut s, 200, &json!({"actions":actions::catalog()}))
             }
             ("GET", "/api/history") => json_reply(&mut s, 200, &history(&r)?),
+            ("POST", "/api/pair") => {
+                let p: PairRequest =
+                    serde_json::from_slice(&req.body).map_err(|_| "invalid_pair_request")?;
+                pair(&mut s, r.clone(), p, stop.clone())?;
+            }
             ("POST", "/api/action") => {
                 let a: ActionRequest =
                     serde_json::from_slice(&req.body).map_err(|_| "invalid_action_request")?;
