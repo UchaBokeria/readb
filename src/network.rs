@@ -469,6 +469,26 @@ impl Manager {
             serde_json::json!({"fenced":self.fenced(),"interface":self.policy.interface,"interface_verified":self.snapshot_valid(&snapshot).is_ok(),"devices":self.state.devices}),
         )
     }
+    /// Root-only read-only provider admission. Exclude only exact recorded peers
+    /// after proving healthy state and live ownership. Unknown peers remain in
+    /// the external baseline even when occupying the managed range.
+    pub fn provider_baseline(&self, uid: u32, k: &mut impl Kernel) -> Res<Snapshot> {
+        if uid != 0 {
+            return Err("network_provider_baseline_requires_root".into());
+        }
+        if self.fenced() {
+            return Err("network_cleanup_unknown: reconcile before provider admission".into());
+        }
+        let mut snapshot = k.snapshot(&self.policy)?;
+        self.snapshot_valid(&snapshot)?;
+        for peer in self.state.devices.values() {
+            snapshot.peers.remove(&peer.key);
+        }
+        Ok(snapshot)
+    }
+    pub(crate) fn policy_fingerprint(&self) -> Res<String> {
+        self.policy.hash()
+    }
     pub fn devices(&self) -> &BTreeMap<String, Peer> {
         &self.state.devices
     }

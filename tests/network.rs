@@ -505,3 +505,121 @@ fn recovery_event_cooldown_starts_after_slow_probe_completion() {
     );
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn provider_baseline_excludes_only_exact_healthy_managed_peers() {
+    let p = state();
+    let mut m = Manager::open(&p, policy()).unwrap();
+    let mut k = kernel();
+    let before = k.snapshot.clone();
+    m.apply(1000, enroll(), &mut k).unwrap();
+    assert!(m.provider_baseline(0, &mut k).unwrap() == before);
+    // Merely occupying the reserved range never makes an external peer managed.
+    k.snapshot
+        .peers
+        .insert(key('D'), vec!["10.88.0.11/32".into()]);
+    let baseline = m.provider_baseline(0, &mut k).unwrap();
+    assert_eq!(
+        baseline.peers.get(&key('D')),
+        Some(&vec!["10.88.0.11/32".into()])
+    );
+    assert!(!baseline.peers.contains_key(&key('C')));
+    assert_eq!(k.calls, 1); // read-only admission
+    std::fs::remove_dir_all(p).unwrap();
+}
+#[test]
+fn provider_baseline_refuses_untrusted_caller_drift_and_pending_intent() {
+    let p = state();
+    let mut m = Manager::open(&p, policy()).unwrap();
+    let mut k = kernel();
+    assert!(m.provider_baseline(1000, &mut k).is_err());
+    m.apply(1000, enroll(), &mut k).unwrap();
+    k.snapshot.peers.remove(&key('C'));
+    assert!(m.provider_baseline(0, &mut k).is_err());
+    k.snapshot
+        .peers
+        .insert(key('C'), vec!["10.88.0.12/32".into()]);
+    assert!(m.provider_baseline(0, &mut k).is_err());
+    k.snapshot
+        .peers
+        .insert(key('C'), vec!["10.88.0.10/32".into()]);
+    k.fail = true;
+    assert!(
+        m.apply(1000, Request::Remove { id: "phone".into() }, &mut k)
+            .is_err()
+    );
+    assert!(m.provider_baseline(0, &mut k).is_err());
+    std::fs::remove_dir_all(p).unwrap();
+}
+
+#[test]
+fn provider_rpc_refuses_nonroot_before_observing_kernel() {
+    use std::{io::Write, os::unix::net::UnixStream};
+    let uid = unsafe { libc::geteuid() };
+    if uid == 0 {
+        return;
+    }
+    let p = state();
+    let mut policy = policy();
+    policy.uid = uid;
+    let mut m = Manager::open(&p, policy).unwrap();
+    struct NoKernel;
+    impl Kernel for NoKernel {
+        fn snapshot(&mut self, _: &Policy) -> Result<Snapshot, String> {
+            panic!("denial must precede kernel read")
+        }
+        fn set(&mut self, _: &Policy, _: &str, _: Option<Ipv4Addr>) -> Result<(), String> {
+            panic!("no write")
+        }
+    }
+    let mut k = NoKernel;
+    let (mut client, mut server) = UnixStream::pair().unwrap();
+    let request = readb::network_runtime::Rpc {
+        schema: 1,
+        request: readb::network_runtime::Call::ProviderBaseline,
+    };
+    writeln!(client, "{}", serde_json::to_string(&request).unwrap()).unwrap();
+    readb::network_runtime::handle(&mut server, &mut m, &mut k).unwrap();
+    let value: serde_json::Value =
+        serde_json::from_slice(&readb::wire::line(&mut client, 4096).unwrap()).unwrap();
+    assert_eq!(value["error"], "network_provider_baseline_requires_root");
+    std::fs::remove_dir_all(p).unwrap();
+}
+
+#[test]
+fn provider_rpc_root_namespace_fixture() {
+    if std::env::var_os("READB_PROVIDER_NAMESPACE").is_none() {
+        return;
+    }
+    assert_eq!(unsafe { libc::geteuid() }, 0);
+    for ns in ["mnt", "net"] {
+        assert_ne!(
+            std::fs::read_link(format!("/proc/self/ns/{ns}")).unwrap(),
+            std::fs::read_link(format!("/proc/1/ns/{ns}")).unwrap()
+        );
+    }
+    use std::{io::Write, os::unix::net::UnixStream};
+    let p = state();
+    let mut m = Manager::open(&p, policy()).unwrap();
+    let mut k = kernel();
+    let expected = k.snapshot.clone();
+    m.apply(0, enroll(), &mut k).unwrap();
+    let (mut client, mut server) = UnixStream::pair().unwrap();
+    let request = readb::network_runtime::Rpc {
+        schema: 1,
+        request: readb::network_runtime::Call::ProviderBaseline,
+    };
+    writeln!(client, "{}", serde_json::to_string(&request).unwrap()).unwrap();
+    readb::network_runtime::handle(&mut server, &mut m, &mut k).unwrap();
+    let value: serde_json::Value =
+        serde_json::from_slice(&readb::wire::line(&mut client, 4096).unwrap()).unwrap();
+    assert_eq!(value["ok"], true);
+    assert_eq!(value["result"]["schema"], 1);
+    assert_eq!(value["result"]["policy_sha256"].as_str().unwrap().len(), 64);
+    let baseline: Snapshot =
+        serde_json::from_value(value["result"]["external_baseline"].clone()).unwrap();
+    assert_eq!(baseline, expected);
+    assert_eq!(value["result"]["devices"]["phone"]["key"], key('C'));
+    assert_eq!(k.calls, 1);
+    std::fs::remove_dir_all(p).unwrap();
+}

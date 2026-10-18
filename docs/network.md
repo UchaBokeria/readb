@@ -147,3 +147,12 @@ The authority server checks its held directory/socket identities once per second
 Helper RuntimeDirectory removal/recreation drops the stale binding and retries the
 fixed path. It does not delete a different socket inode. A real restricted-root
 namespace regression proved this recovery; legacy live services were unchanged.
+
+
+Root upgrade admission can request `provider_baseline` over the protected helper
+socket. It returns the exact policy SHA256, recorded devices and live external
+snapshot. Only root may request it. A pending/poisoned manager, changed interface,
+or missing/changed managed peer refuses. Exclusion uses exact recorded keys and
+routes; an unknown in-range peer stays external. This is read-only evidence, not
+an upgrade or permission to replace the saved baseline. The pending consumer must
+verify helper identity/policy hash and compare the original saved external peers.

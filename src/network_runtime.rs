@@ -26,6 +26,7 @@ use std::{
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Call {
     Status,
+    ProviderBaseline,
     Restore,
     Reconcile,
     Apply { request: Request },
@@ -115,6 +116,12 @@ fn handle_recovery_authority(
                     result["recovery"] = health;
                 }
                 Ok(result)
+            }
+            Call::ProviderBaseline => {
+                let baseline = m.provider_baseline(uid, k)?;
+                Ok(
+                    json!({"schema":1,"policy_sha256":m.policy_fingerprint()?,"external_baseline":baseline,"devices":m.devices()}),
+                )
             }
             Call::Restore => {
                 m.restore(uid, k)?;

@@ -67,3 +67,10 @@ Maintenance runtime/CLI passes260host+260Rust1.88/musl tests, fmt/Clippy.
 Actual isolated SSH proof passed controller/viewer refusal, persisted barrier
 through service restart, wrong-owner refusal and exact resume/new claim. Fixture
 stopped; live service PIDs unchanged. No live upgrade deployed.
+
+Root-only provider-baseline evidence API passes264host+264Rust1.88/musl tests,
+fmt/Clippy and scoped review. Actual root SO_PEERCRED RPC passed in private
+mount/network namespaces with a synthetic kernel. Exact recorded healthy peers
+alone are excluded; unknown peers and pending/drift remain fail-closed. Proof
+executables removed; live user-service PIDs unchanged. Root upgrade consumer and
+saved-baseline binding are still pending. No provider/peer/device was migrated.
