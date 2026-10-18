@@ -1,10 +1,13 @@
-use crate::{backend::atomic, policy::Res, registry::private_dir};
+use crate::{
+    policy::Res,
+    registry::private_dir,
+    user_install::{Desired, Transaction},
+};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::{
     fs,
     os::unix::fs::MetadataExt,
-    os::unix::fs::symlink,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -110,38 +113,18 @@ fn find_adb(home: &Path) -> Option<PathBuf> {
     ];
     candidates.into_iter().find(|p| p.is_file())
 }
-fn atomic_bytes(path: &Path, bytes: &[u8], mode: u32) -> Res<()> {
-    let temp = path.with_extension(format!("new-{}", crate::policy::random()));
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-    let result = (|| {
-        let mut f = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(mode)
-            .open(&temp)
-            .map_err(|_| "install_file_create_failed")?;
-        use std::os::unix::fs::PermissionsExt;
-        f.set_permissions(fs::Permissions::from_mode(mode))
-            .map_err(|_| "install_file_permissions_failed")?;
-        f.write_all(bytes)
-            .and_then(|_| f.sync_all())
-            .map_err(|_| "install_file_write_failed")?;
-        fs::rename(&temp, path).map_err(|_| "install_file_replace_failed")?;
-        fs::File::open(path.parent().ok_or("invalid_install_path")?)
-            .and_then(|f| f.sync_all())
-            .map_err(|_| "install_directory_sync_failed")?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temp);
-    }
-    result
-}
 pub fn install(p: &InstallPlan, home: &Path, dry_run: bool) -> Res<Value> {
+    install_recover(p, home, dry_run, false)
+}
+pub fn install_recover(p: &InstallPlan, home: &Path, dry_run: bool, recover: bool) -> Res<Value> {
     if dry_run {
         return Ok(
             json!({"dry_run":true,"plan":p,"privileges":"user only; network provisioning is a separate explicit step"}),
+        );
+    }
+    if unsafe { libc::geteuid() } == 0 {
+        return Err(
+            "user_installer_requires_nonroot_identity: use setup as root to select a user".into(),
         );
     }
     let binary = Path::new(&p.binary);
@@ -196,7 +179,7 @@ pub fn install(p: &InstallPlan, home: &Path, dry_run: bool) -> Res<Value> {
         None
     };
     let unit = Path::new(&p.unit_path);
-    let old_unit = if p.server {
+    let _old_unit = if p.server {
         match fs::symlink_metadata(unit) {
             Ok(meta) => {
                 if !meta.is_file()
@@ -225,65 +208,70 @@ pub fn install(p: &InstallPlan, home: &Path, dry_run: bool) -> Res<Value> {
     } else {
         None
     };
-    private_dir(parent)?;
-    match fs::symlink_metadata(binary) {
-        Ok(m) => {
-            if !m.is_file()
-                || m.len() != bytes.len() as u64
-                || m.uid() != unsafe { libc::geteuid() }
-                || m.nlink() != 1
-                || m.mode() & 0o777 != 0o700
-                || fs::read(binary).map_err(|_| "release_unreadable")? != bytes
-            {
-                return Err("immutable_release_mismatch".into());
-            }
+    // Render every desired artifact before any package path changes. Hashes in
+    // the private journal bind exact bytes, never copy plaintext secrets into it.
+    let mut artifacts = vec![Desired::file(binary.into(), bytes, 0o700).immutable()];
+    let completion = completion_artifacts(home)?;
+    artifacts.extend(completion);
+    if p.server {
+        let config_bytes = if let Some(initial) = initial {
+            serde_json::to_vec(&initial).map_err(|_| "install_config_encoding_failed")?
+        } else {
+            fs::read(config).map_err(|_| "existing_config_unavailable")?
+        };
+        let config_exists = fs::symlink_metadata(config).is_ok();
+        let mode = if config_exists {
+            fs::symlink_metadata(config)
+                .map_err(|_| "existing_config_metadata_unavailable")?
+                .mode()
+                & 0o777
+        } else {
+            0o600
+        };
+        let desired = Desired::file(config.into(), config_bytes, mode);
+        artifacts.push(if config_exists {
+            desired.preserve()
+        } else {
+            desired
+        });
+        if Path::new("/run/systemd/system").is_dir() {
+            artifacts.push(Desired::file(
+                unit.into(),
+                p.unit.as_bytes().to_vec(),
+                0o600,
+            ));
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => atomic_bytes(binary, &bytes, 0o700)?,
-        Err(_) => return Err("release_metadata_unavailable".into()),
     }
-    let completion = install_completions(binary, home)?;
+    artifacts.push(Desired::link(link.into(), binary.into()));
+    use sha2::Digest;
+    let binding = sha2::Sha256::digest(
+        serde_json::to_vec(&(home, p)).map_err(|_| "install_plan_encoding_failed")?,
+    )
+    .iter()
+    .map(|b| format!("{b:02x}"))
+    .collect::<String>();
+    let mut tx = Transaction::open(
+        &home.join(".local/share/readb-installer"),
+        &binding,
+        &artifacts,
+        recover,
+    )?;
     if p.server {
         private_dir(Path::new(&p.state))?;
-        private_dir(&home.join(".config/readb"))?;
-        if let Some(initial) = initial {
-            atomic(config, &initial)?;
-        }
-        if Path::new("/run/systemd/system").is_dir() {
-            fs::create_dir_all(unit.parent().unwrap()).map_err(|_| "unit_directory_unavailable")?;
-            if let Some(old) = &old_unit
-                && old != p.unit.as_bytes()
-            {
-                let backups = Path::new(&p.state).join("backups");
-                private_dir(&backups)?;
-                atomic_bytes(
-                    &backups.join(format!("unit-{}.service", crate::policy::random())),
-                    old,
-                    0o600,
-                )?;
-            }
-            atomic_bytes(unit, p.unit.as_bytes(), 0o600)?;
-            if let Err(e) = systemctl(&["daemon-reload"]) {
-                if let Some(old) = old_unit {
-                    atomic_bytes(unit, &old, 0o600)?;
-                } else {
-                    fs::remove_file(unit).map_err(|_| "install_unit_rollback_failed")?;
-                }
-                let _ = systemctl(&["daemon-reload"]);
-                return Err(format!(
-                    "install_not_activated: {e}; prior command and unit preserved"
-                ));
-            }
-        }
     }
-    fs::create_dir_all(link.parent().unwrap()).map_err(|_| "bin_directory_unavailable")?;
-    let temp = link.with_extension(format!("new-{}", crate::policy::random()));
-    symlink(binary, &temp).map_err(|_| "binary_link_failed")?;
-    if fs::rename(&temp, link).is_err() {
-        let _ = fs::remove_file(temp);
-        return Err("binary_link_replace_failed".into());
+    // Publish the command link last. A failed reload leaves exact before/after
+    // evidence and a visible recovery fence, not an implicitly successful install.
+    let last = artifacts.len() - 1;
+    for (n, artifact) in artifacts[..last].iter().enumerate() {
+        tx.publish(n, artifact)?;
     }
+    if p.server && Path::new("/run/systemd/system").is_dir() {
+        systemctl(&["daemon-reload"]).map_err(|_|"install_reload_unconfirmed: pending files kept; fix user bus then rerun exact install with --recover")?;
+    }
+    tx.publish(last, &artifacts[last])?;
+    tx.finish()?;
     Ok(
-        json!({"installed":true,"binary":p.binary,"link":p.link,"server":p.server,"state":p.state,"completions":completion,"next":if p.server{"readb --local service start"}else{"readb context add NAME --ssh HOST --state SERVER_STATE"},"network_provisioned":false,"note":"Existing devices and VPN configuration were not changed."}),
+        json!({"installed":true,"binary":p.binary,"link":p.link,"server":p.server,"state":p.state,"completions":["bash","zsh","fish"],"next":if p.server{"readb --local service start"}else{"readb context add NAME --ssh HOST --state SERVER_STATE"},"network_provisioned":false,"services_started":false,"note":"Existing devices and VPN configuration were not changed."}),
     )
 }
 
@@ -344,8 +332,8 @@ pub fn manage(action: &str) -> Res<Value> {
         _ => Err("unsupported_service_action".into()),
     }
 }
-fn install_completions(binary: &Path, home: &Path) -> Res<Vec<String>> {
-    let mut installed = Vec::new();
+fn completion_artifacts(home: &Path) -> Res<Vec<Desired>> {
+    let mut result = Vec::new();
     for (shell, path) in [
         (
             "bash",
@@ -354,17 +342,14 @@ fn install_completions(binary: &Path, home: &Path) -> Res<Vec<String>> {
         ("zsh", home.join(".local/share/zsh/site-functions/_readb")),
         ("fish", home.join(".config/fish/completions/readb.fish")),
     ] {
-        let output = Command::new(binary)
-            .args(["completion", shell])
-            .output()
-            .map_err(|_| "completion_generate_failed")?;
-        if !output.status.success() {
+        let mut command = Command::new("/proc/self/exe");
+        command.args(["completion", shell]);
+        let output =
+            crate::runner::capture_cmd(command, std::time::Duration::from_secs(15), 1024 * 1024)?;
+        if !output.ok {
             return Err("completion_generate_failed".into());
         }
-        fs::create_dir_all(path.parent().unwrap())
-            .map_err(|_| "completion_directory_unavailable")?;
-        atomic_bytes(&path, &output.stdout, 0o600)?;
-        installed.push(shell.into());
+        result.push(Desired::file(path, output.out, 0o600).owned());
     }
-    Ok(installed)
+    Ok(result)
 }

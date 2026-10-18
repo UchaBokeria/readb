@@ -112,6 +112,11 @@ enum Cmd {
         dry_run: bool,
         #[arg(long)]
         prefix: Option<PathBuf>,
+        #[arg(
+            long,
+            help = "Recover only the exact pending install after verifying recorded files"
+        )]
+        recover: bool,
     },
     #[command(about = "Print shell completion")]
     Completion { shell: clap_complete::Shell },
@@ -579,6 +584,7 @@ fn run() -> Res<i32> {
             client: client_mode,
             dry_run,
             prefix,
+            recover,
         } => {
             if server == client_mode {
                 return Err("choose_--server_or_--client".into());
@@ -588,7 +594,9 @@ fn run() -> Res<i32> {
                 .clone()
                 .unwrap_or_else(|| home.join(".local/share/readb"));
             let p = readb::service::plan(&home, &prefix, *server)?;
-            output(&readb::service::install(&p, &home, *dry_run)?);
+            output(&readb::service::install_recover(
+                &p, &home, *dry_run, *recover,
+            )?);
             return Ok(0);
         }
         Cmd::Service(sub) => {

@@ -46,3 +46,5 @@ pub mod setup_apply;
 pub mod setup_files;
 
 pub mod setup_user;
+
+pub mod user_install;

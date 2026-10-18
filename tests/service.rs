@@ -199,3 +199,117 @@ fn unsafe_existing_server_config_is_rejected_before_install_writes() {
         fs::remove_dir_all(root).unwrap();
     }
 }
+#[test]
+fn pending_user_install_never_restarts_implicitly_or_discards_unknown_evidence() {
+    use std::{fs, os::unix::fs::PermissionsExt, process::Command};
+    let root =
+        std::env::temp_dir().join(format!("readb-install-pending-{}", readb::policy::random()));
+    fs::create_dir(&root).unwrap();
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+    let journal = root.join(".local/share/readb-installer");
+    fs::create_dir_all(&journal).unwrap();
+    fs::set_permissions(&journal, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::write(journal.join("pending.json"), b"unknown pending evidence").unwrap();
+    fs::set_permissions(
+        journal.join("pending.json"),
+        fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
+    for recovery in [false, true] {
+        let mut call = Command::new(env!("CARGO_BIN_EXE_readb"));
+        call.args(["install", "--client", "--prefix"])
+            .arg(root.join("prefix"))
+            .env("HOME", &root);
+        if recovery {
+            call.arg("--recover");
+        }
+        let r = call.output().unwrap();
+        assert!(!r.status.success());
+        let expected = if recovery {
+            "install_invalid_journal_preserved"
+        } else {
+            "install_cleanup_unknown"
+        };
+        assert!(
+            String::from_utf8_lossy(&r.stderr).contains(expected),
+            "{}",
+            String::from_utf8_lossy(&r.stderr)
+        );
+        assert!(!root.join("prefix/.install").exists());
+        assert_eq!(
+            fs::read(journal.join("pending.json")).unwrap(),
+            b"unknown pending evidence"
+        );
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+#[test]
+fn interrupted_server_reload_recovers_exact_files_without_starting_a_service() {
+    use std::{fs, os::unix::fs::PermissionsExt, path::Path, process::Command};
+    if !Path::new("/run/systemd/system").is_dir() {
+        return;
+    }
+    let root =
+        std::env::temp_dir().join(format!("readb-server-recovery-{}", readb::policy::random()));
+    fs::create_dir(&root).unwrap();
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+    let adb = root.join("Android/platform-tools/adb");
+    fs::create_dir_all(adb.parent().unwrap()).unwrap();
+    fs::write(adb, b"not executed").unwrap();
+    let bin = root.join("fake-bin");
+    fs::create_dir(&bin).unwrap();
+    let manager = bin.join("systemctl");
+    fs::write(&manager,b"#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$READB_TEST_MANAGER_LOG\"\n[ -f \"$READB_TEST_MANAGER_OK\" ]\n").unwrap();
+    fs::set_permissions(&manager, fs::Permissions::from_mode(0o700)).unwrap();
+    let call = |recover: bool| {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_readb"));
+        c.args(["install", "--server", "--prefix"])
+            .arg(root.join("prefix"));
+        if recover {
+            c.arg("--recover");
+        }
+        c.env("HOME", &root)
+            .env("PATH", &bin)
+            .env("READB_TEST_MANAGER_LOG", root.join("manager.log"))
+            .env("READB_TEST_MANAGER_OK", root.join("manager-ok"));
+        c.output().unwrap()
+    };
+    let failed = call(false);
+    assert!(!failed.status.success());
+    assert!(
+        String::from_utf8_lossy(&failed.stderr).contains("install_reload_unconfirmed"),
+        "{}",
+        String::from_utf8_lossy(&failed.stderr)
+    );
+    let journal = root.join(".local/share/readb-installer");
+    assert!(journal.join("pending.json").exists());
+    assert!(!root.join(".local/bin/readb").exists());
+    let config = fs::read(root.join(".config/readb/server.json")).unwrap();
+    let unit = fs::read(root.join(".config/systemd/user/readb.service")).unwrap();
+    fs::write(root.join("manager-ok"), b"ok").unwrap();
+    let ordinary = call(false);
+    assert!(!ordinary.status.success());
+    assert!(String::from_utf8_lossy(&ordinary.stderr).contains("install_cleanup_unknown"));
+    let recovered = call(true);
+    assert!(
+        recovered.status.success(),
+        "{}",
+        String::from_utf8_lossy(&recovered.stderr)
+    );
+    assert!(!journal.join("pending.json").exists());
+    assert!(journal.join("receipt.json").is_file());
+    assert!(root.join(".local/bin/readb").is_symlink());
+    assert_eq!(
+        config,
+        fs::read(root.join(".config/readb/server.json")).unwrap()
+    );
+    assert_eq!(
+        unit,
+        fs::read(root.join(".config/systemd/user/readb.service")).unwrap()
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("manager.log")).unwrap(),
+        "--user daemon-reload\n--user daemon-reload\n"
+    );
+    fs::remove_dir_all(root).unwrap();
+}

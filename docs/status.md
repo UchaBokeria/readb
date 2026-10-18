@@ -128,3 +128,11 @@ next; no production cutover. Quest2D panel candidate passes6storage checks and
 Quest actual-window top/bottom captures now pass development UiChecks and visual
 review at1280x900; all6storage checks pass after upgrade. No real profile/VPN/report
 activation. Hands/resize lifecycle, protected boot and migration acceptance remain.
+
+User-file installer now has a private write-ahead transaction, exact explicit
+`--recover`, owned completion receipts and receipt-bound before/after verification.
+The command link publishes last; server file installs only reload, never start a
+service. Review fixes cover recovered-file fsync, replaced receipts across restart
+and best-effort pending-fence restoration after failed cleanup sync. Host182tests,
+Rust1.88 musl182tests, JNI/stale-callback checks and fmt/Clippy pass. Full setup
+activation, network runtime recovery and encrypted device migration remain open.

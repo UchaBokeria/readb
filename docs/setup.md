@@ -25,11 +25,10 @@ or connection state does not change that identity. Missing evidence blocks
 readiness. Reuse checks actual WireGuard type, server address/prefix and listener.
 It never replaces existing interface keys, peers or routes.
 
-The private phase journal is library infrastructure, not an apply command yet.
-It binds the plan SHA, serializes writers and records ordered running/completed
-phases durably. An interrupted phase cannot complete through a new handle.
-Reconciliation, owned-file receipts, root network helper and full apply remain
-pending. Keep old services until replacement acceptance and rollback checks pass.
+The private phase journal binds exact inputs and serializes writers. Root files
+can be installed with the command below; full service/network activation remains
+pending. Interrupted phases need explicit recovery. Keep old services until real
+replacement acceptance and rollback checks pass.
 
 PC clients keep using their SSH context. Never set up direct device transport
 on a client as a fallback. Web stays off by default.
@@ -93,3 +92,22 @@ no_new_privs and supplies a clean selected-user environment. It never runs a
 user-writable binary as root. Timeout/errors report unconfirmed installation;
 inspect the recorded phase before retry. Full setup orchestration is still pending.
 Portable/local account limits and destination checks: [builds](build.md).
+
+## Interrupted user installation
+
+`readb install --client` and `readb install --server` now journal user files.
+They never start or enable a service. Server mode reloads the existing user service
+manager after writing its unit; the command link is published last. Full root-to-user
+setup and live migration remain separate.
+
+An interruption leaves private `~/.local/share/readb-installer/pending.json`.
+Repeat the exact command and original binary with `--recover`. Changed plans,
+external file edits or altered receipts remain fenced. Do not remove the intent.
+The journal stores hashes, modes and paths, not configuration secrets. Existing
+config stays unchanged; edited or unknown completions are preserved. A prior exact
+receipt allows an owned completion upgrade.
+
+Recovery syncs accepted files and parent directories before writing a receipt and
+clearing intent. Failed cleanup restores the pending fence best-effort; broken
+storage can prevent restoration, and the error explicitly requires inspection.
+A successful file install is not service/network/device acceptance.
