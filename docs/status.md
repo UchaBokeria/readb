@@ -25,6 +25,9 @@ journal or remove legacy services to bypass an upgrade/acceptance gate.
 - Controller network proxy: exact device/ticket preflight, durable operation,
   one-use request proof, fixed credential-checked root callback and typed outcomes.
   CLI follows the selected context; root maintenance remains explicitly local.
+- Private upgrade-marker storage: exact upgrade/config binding, no-replace
+  publication, private-file admission and explicit matching resume. Runtime
+  registry/daemon enforcement is still pending.
 - Android companion/JNI: encrypted profile/storage, embedded WireGuard, reporting,
   permission UI and Quest panel source. Development APK exists; migration pending.
 
@@ -59,3 +62,6 @@ Keep requested awake/unlocked policy separate from observed OS status.
 Design: design.md. Android: android.md. Root boundary: network.md. Setup: setup.md.
 Full owner migration plan/evidence: cloud/docs/readb-design.md and
 cloud/docs/readb-implementation.md. Earlier development snapshots remain in Git.
+
+Maintenance storage prerequisite passes249host+249Rust1.88/musl, fmt/Clippy.
+It is a storage library, not an active upgrade barrier or a deployed upgrade.
