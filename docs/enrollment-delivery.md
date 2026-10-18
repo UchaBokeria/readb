@@ -55,7 +55,7 @@ secret and exact envelope; check commitment/context on restore, never reseal.
   HandoverProtocol and every Android runtime/storage entry point unchanged.
 - [x] Exercise Rust envelope -> Java decryption/ACK -> Rust final -> Java verify,
   including all negative cases, using generated synthetic keys/material only.
-- [ ] Run full native tests, fmt/Clippy, actual Rust1.88 native/musl checks and
+- [x] Run full native tests, fmt/Clippy, actual Rust1.88 native/musl checks and
   existing Android host checks; hand immutable source to another reviewer.
 
 ## Dependencies
@@ -91,8 +91,14 @@ their data untouched. None is proved by these pure host codec tests.
 
 October19: the missing-codec RED test was recorded before implementation. The
 crosslanguage host test passes, including public-header rewrites that exercise
-GCM AAD rather than just stale-hash rejection. Final workspace and Rust1.88
-native/musl proof is in progress. Java compiles at source/target11 with SDK36 and
+GCM AAD rather than just stale-hash rejection. The final locked workspace suite
+passes on the host and actual Rust1.88 native (315 tests each, including five
+compile-fail doctests); actual Rust1.88 musl passes 310 tests. Cross-target cargo
+skips those doctests. Musl emits the existing unsupported Android-core cdylib
+warning; it does not prevent the server/test build. All-target Clippy with
+warnings denied, fmt/diff checks, JNI smoke, NSD stale-callback checks and legacy
+handover host checks pass. Independent review of immutable code d64812a found
+no important source issues. Java compiles at source/target11 with SDK36 and
 class version55, and also under the stricter host `--release 11` API contract.
 This is not Android Keystore or actual device delivery acceptance.
 
